@@ -2,16 +2,48 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.so
+*.dll
+*.dylib
 
 .env
 .idea/
+.vscode/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 .tmp/
 tmp*/
 pytest-cache-files-*/
+*.tmp
+*.temp
+Thumbs.db
+.DS_Store
 
 logs/
+*.log
 cache/*.db
 memory/*.db
 chroma_db/
 models/
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
