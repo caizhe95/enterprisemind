@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "7860:7860"
+    environment:
+      - DATABASE_URL=postgresql://postgres:123456@db:5432/enterprisemind
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
+      - LANGSMITH_TRACING=true
+      - LANGSMITH_PROJECT=enterprisemind-docker
+      - RUN_MODE=local
+    volumes:
+      - ./data:/app/data
+      - app_logs:/app/logs
+      - app_cache:/app/cache
+      - app_memory:/app/memory
+      - chroma_data:/app/chroma_db
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - enterprisemind_net
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=123456
+      - POSTGRES_DB=enterprisemind
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - enterprisemind_net
+
+volumes:
+  postgres_data:
+  app_logs:
+  app_cache:
+  app_memory:
+  chroma_data:
+
+networks:
+  enterprisemind_net:
+    driver: bridge

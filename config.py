@@ -1,0 +1,121 @@
+# config.py - 精简版（优先从.env读取）
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+
+
+class Config:
+    """
+    双模式配置：local (DeepSeek API) 或 cloud (Ollama本地)
+    所有关键配置优先从环境变量读取，.env文件已覆盖全部
+    """
+
+    # ========== 1. 核心模式切换 ==========
+    RUN_MODE = os.getenv("RUN_MODE", "local")  # 默认local，但.env已设置
+
+    # ========== 2. LLM配置（两种模式） ==========
+    # Local模式：DeepSeek API
+    DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+    DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    DEEPSEEK_API_BASE = "https://api.deepseek.com/v1"  # 固定值，无需env
+
+    # Cloud模式：Ollama
+    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:14b")
+    OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "bge-m3")
+
+    # ========== 3. 数据存储（.env已定义） ==========
+    DATABASE_URL = os.getenv(
+        "DATABASE_URL", "postgresql://postgres:123456@localhost:5432/enterprisemind"
+    )
+    CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
+
+    # ========== 4. 可选功能 ==========
+    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+
+    # LangSmith（可选，保持现状）
+    LANGSMITH_TRACING = os.getenv("LANGSMITH_TRACING", "false").lower() == "true"
+    LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT", "enterprisemind-demo")
+    LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY", "")
+    LANGSMITH_ENDPOINT = os.getenv(
+        "LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"
+    )
+    LANGSMITH_FAIL_OPEN = os.getenv("LANGSMITH_FAIL_OPEN", "true").lower() == "true"
+    LANGSMITH_PRECHECK_TIMEOUT_SEC = float(
+        os.getenv("LANGSMITH_PRECHECK_TIMEOUT_SEC", "2.0")
+    )
+
+    # ========== 5. 服务配置（.env已定义） ==========
+    HOST = os.getenv("HOST", "127.0.0.1")
+    PORT = int(os.getenv("PORT", "7860"))
+    DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
+    # ========== 6. HITL交互阈值 ==========
+    HITL_AMBIGUITY_CONFIDENCE_LEVEL = os.getenv(
+        "HITL_AMBIGUITY_CONFIDENCE_LEVEL", "medium"
+    ).lower()
+    HITL_REQUIRE_CONFIRM_ON_DUAL_ROUTE = (
+        os.getenv("HITL_REQUIRE_CONFIRM_ON_DUAL_ROUTE", "true").lower() == "true"
+    )
+    HITL_ENABLE_LOW_CONF_CONFIRM = (
+        os.getenv("HITL_ENABLE_LOW_CONF_CONFIRM", "true").lower() == "true"
+    )
+
+    # ========== 7. 本地Embedding备用（local模式使用） ==========
+    # 这些保持硬编码，因为.env没定义，且是技术细节
+    LOCAL_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"  # 384维
+    HF_ENDPOINT = "https://hf-mirror.com"  # 国内镜像加速
+
+    # ========== 8. 功能开关（代码内固定） ==========
+    ENABLE_RERANK = os.getenv("ENABLE_RERANK", "true").lower() == "true"  # 重排序开关
+    ENABLE_SELF_RAG = (
+        os.getenv("ENABLE_SELF_RAG", "true").lower() == "true"
+    )  # Self-RAG总开关
+    ENABLE_QUERY_OPTIMIZATION = (
+        os.getenv("ENABLE_QUERY_OPTIMIZATION", "true").lower() == "true"
+    )  # 查询优化开关
+    # 默认使用更适合中文场景的 reranker，可通过 .env 覆盖
+    RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
+    RRF_K = 60  # RRF融合参数
+
+
+config = Config()
+
+
+def check_environment():
+    """启动前环境检查（简化版）"""
+    print(f"\n{'=' * 50}")
+    print("🚀 EnterpriseMind 启动配置")
+    print(f"{'=' * 50}")
+    print(f"模式: {config.RUN_MODE.upper()}")
+
+    if config.RUN_MODE == "cloud":
+        print(f"LLM: Ollama ({config.OLLAMA_MODEL})")
+        print(f"Embedding: {config.OLLAMA_EMBEDDING_MODEL}")
+        # 检查Ollama连接...
+    else:
+        print(f"LLM: DeepSeek API ({config.DEEPSEEK_MODEL})")
+        print(f"Embedding: {config.LOCAL_EMBEDDING_MODEL}")
+        if not config.DEEPSEEK_API_KEY:
+            print("⚠️ 警告: DEEPSEEK_API_KEY 未设置")
+
+    print(f"向量库: {config.CHROMA_PERSIST_DIR}")
+    print(f"数据库: {config.DATABASE_URL.split('@')[-1]}")  # 隐藏密码
+    print(f"服务: http://{config.HOST}:{config.PORT}")
+    print(f"调试模式: {'开启' if config.DEBUG else '关闭'}")
+    print(f"Self-RAG: {'开启' if config.ENABLE_SELF_RAG else '关闭'}")
+    print(f"查询优化: {'开启' if config.ENABLE_QUERY_OPTIMIZATION else '关闭'}")
+    print(
+        "HITL: ambiguity<={level}, dual_route_confirm={dual}, low_conf_confirm={low}".format(
+            level=config.HITL_AMBIGUITY_CONFIDENCE_LEVEL,
+            dual=config.HITL_REQUIRE_CONFIRM_ON_DUAL_ROUTE,
+            low=config.HITL_ENABLE_LOW_CONF_CONFIRM,
+        )
+    )
+    print(f"{'=' * 50}\n")
+
+    return config
