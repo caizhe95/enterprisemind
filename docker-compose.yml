@@ -6,12 +6,14 @@ services:
     ports:
       - "7860:7860"
     environment:
-      - DATABASE_URL=postgresql://postgres:123456@db:5432/enterprisemind
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-123456}@db:5432/enterprisemind
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
       - LANGSMITH_TRACING=true
       - LANGSMITH_PROJECT=enterprisemind-docker
       - RUN_MODE=local
+      - ENABLE_SELF_RAG=${ENABLE_SELF_RAG:-true}
+      - ENABLE_QUERY_OPTIMIZATION=${ENABLE_QUERY_OPTIMIZATION:-true}
     volumes:
       - ./data:/app/data
       - app_logs:/app/logs
@@ -29,7 +31,7 @@ services:
     image: postgres:15-alpine
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=123456
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-123456}
       - POSTGRES_DB=enterprisemind
     volumes:
       - postgres_data:/var/lib/postgresql/data

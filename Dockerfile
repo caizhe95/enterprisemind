@@ -1,5 +1,8 @@
 # Dockerfile - EnterpriseMind 生产部署
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 # 安装系统依赖
 RUN apt-get update && apt-get install -y \
@@ -14,6 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 运行阶段
 FROM python:3.11-slim
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 # 安装运行时依赖
 RUN apt-get update && apt-get install -y \
@@ -40,7 +45,7 @@ USER appuser
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:7860')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860', timeout=5)" || exit 1
 
 # 暴露端口
 EXPOSE 7860
