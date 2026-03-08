@@ -30,9 +30,38 @@ Dockerfile            # 容器镜像构建
 
 - Python 3.11+
 - PostgreSQL 15（本地或 Docker）
-- 可用的 LLM Key（默认 DeepSeek）
+- 可用的 LLM（支持双模式：DeepSeek API / Ollama）
 
-## 本地启动
+## 运行模式（双模式）
+
+### 1. Local 模式（DeepSeek API）
+
+适用：本地开发、无需自建模型服务。
+
+`.env` 关键配置：
+
+- `RUN_MODE=local`
+- `DEEPSEEK_API_KEY=...`
+- `DEEPSEEK_MODEL=deepseek-chat`
+- `DATABASE_URL=postgresql://postgres:123456@localhost:5432/enterprisemind`
+- `ENABLE_SELF_RAG=true`
+- `ENABLE_QUERY_OPTIMIZATION=true`
+
+### 2. Cloud 模式（Ollama）
+
+适用：云端部署或私有模型推理。
+
+`.env` 关键配置：
+
+- `RUN_MODE=cloud`
+- `OLLAMA_BASE_URL=http://<your-host>:11434`
+- `OLLAMA_MODEL=deepseek-r1:14b`
+- `OLLAMA_EMBEDDING_MODEL=bge-m3`
+- `DATABASE_URL=postgresql://postgres:123456@<db-host>:5432/enterprisemind`
+- `ENABLE_SELF_RAG=true`
+- `ENABLE_QUERY_OPTIMIZATION=true`
+
+## 启动方式
 
 1. 安装依赖
 
@@ -40,15 +69,7 @@ Dockerfile            # 容器镜像构建
 pip install -r requirements.txt
 ```
 
-2. 配置环境变量（` .env `）
-
-关键项：
-
-- `RUN_MODE=local`
-- `DEEPSEEK_API_KEY=...`
-- `DATABASE_URL=postgresql://postgres:123456@localhost:5432/enterprisemind`
-- `ENABLE_SELF_RAG=true`
-- `ENABLE_QUERY_OPTIMIZATION=true`
+2. 按上面的模式配置 `.env`
 
 3. 初始化数据库
 
@@ -68,7 +89,9 @@ python app.py
 uvicorn server:api --host 0.0.0.0 --port 8000
 ```
 
-## Docker 启动
+## Docker 启动（同样支持双模式）
+
+在 `.env` 设置对应模式后执行：
 
 ```bash
 docker compose up --build
@@ -96,4 +119,3 @@ python benchmarks/calc_benchmark.py --perf benchmarks/simulated_perf_runs.csv --
 
 - 缓存优化：`P95 延迟 -37.0%`，`Token 成本 -23.0%`
 - 查询优化：`Recall@5 +15.0%`，`Answer F1 +16.8%`，`幻觉率 -66.7%`
-
