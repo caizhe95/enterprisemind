@@ -20,19 +20,12 @@ def hitl_strategy_confirm_node(state: AgentState) -> dict:
     if chosen not in {"sql", "search", "calculation", "retrieval"}:
         chosen = recommended
 
-    mapping = {
-        "sql": "sql_agent",
-        "search": "search_agent",
-        "calculation": "calculation_agent",
-        "retrieval": "retrieval_agent",
-    }
-    next_step = mapping[chosen]
     decision_log = f"HITL策略确认: chosen={chosen}, recommended={recommended}"
 
     return {
         "routing_hint": chosen,
         "hitl_request": None,
-        "next_step": next_step,
+        "next_step": "planner",
         "execution_trace": [
             {"node": "hitl_strategy_confirm", "decision": decision_log}
         ],
@@ -68,7 +61,18 @@ def hitl_low_conf_confirm_node(state: AgentState) -> dict:
             **base,
             "question": retry_question,
             "routing_hint": "search",
-            "next_step": "search_agent",
+            "retrieved_docs": [],
+            "retrieval_grade": None,
+            "tool_results": [],
+            "tool_calls": [],
+            "worker_trace": [],
+            "step_results": [],
+            "last_worker_output": None,
+            "extraction_context": None,
+            "comparison_context": None,
+            "calculation_expression": None,
+            "recommendation_context": None,
+            "next_step": "planner",
             "final_answer": None,
             "citations": [],
         }
@@ -78,7 +82,52 @@ def hitl_low_conf_confirm_node(state: AgentState) -> dict:
         **base,
         "question": retry_question,
         "routing_hint": "retrieval",
-        "next_step": "retrieval_agent",
+        "retrieved_docs": [],
+        "retrieval_grade": None,
+        "tool_results": [],
+        "tool_calls": [],
+        "worker_trace": [],
+        "step_results": [],
+        "last_worker_output": None,
+        "extraction_context": None,
+        "comparison_context": None,
+        "calculation_expression": None,
+        "recommendation_context": None,
+        "next_step": "planner",
         "final_answer": None,
         "citations": [],
+    }
+
+
+def hitl_worker_confirm_node(state: AgentState) -> dict:
+    """Worker 侧导购槽位确认。"""
+    request = state.get("hitl_request") or {}
+    decision = interrupt(request)
+
+    slot_answer = ""
+    if isinstance(decision, dict):
+        slot_answer = str(decision.get("slot_answer") or "").strip()
+    else:
+        slot_answer = str(decision or "").strip()
+
+    if not slot_answer:
+        slot_answer = "预算不限，优先性价比"
+
+    profile = dict(state.get("shopping_profile") or {})
+    profile["user_preference"] = slot_answer
+    question = state["question"]
+    if "用户补充偏好" not in question:
+        question = f"{question}\n用户补充偏好：{slot_answer}"
+
+    return {
+        "question": question,
+        "shopping_profile": profile,
+        "hitl_request": None,
+        "next_step": "retrieval_agent",
+        "execution_trace": [
+            {
+                "node": "hitl_worker_confirm",
+                "decision": f"slot_answer={slot_answer}",
+            }
+        ],
     }

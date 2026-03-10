@@ -1,4 +1,4 @@
-"""FastAPI service for EnterpriseMind."""
+"""FastAPI service for shopping multi-agent assistant."""
 
 import time
 import uuid
@@ -15,7 +15,10 @@ from memory.memory_manager import get_memory_manager
 
 check_environment()
 
-api = FastAPI(title="EnterpriseMind API")
+api = FastAPI(
+    title="智能导购多 Agent 系统 API",
+    description="多 Worker 智能导购 API，支持检索、结构化抽取、推荐、计算、SQL 分析与外部搜索。",
+)
 
 
 class ChatRequest(BaseModel):
@@ -32,6 +35,7 @@ class DecisionRequest(BaseModel):
     strategy: Optional[
         Literal["auto", "sql", "search", "calculation", "retrieval"]
     ] = None
+    slot_answer: Optional[str] = None
     session_id: Optional[str] = None
     user_id: Optional[str] = None
 
@@ -106,14 +110,18 @@ def chat(req: ChatRequest) -> Dict[str, Any]:
 
 @api.post("/decision")
 def decision(req: DecisionRequest) -> Dict[str, Any]:
-    if not req.action and not req.strategy:
-        raise HTTPException(status_code=400, detail="action 或 strategy 至少提供一个")
+    if not req.action and not req.strategy and not req.slot_answer:
+        raise HTTPException(
+            status_code=400, detail="action、strategy、slot_answer 至少提供一个"
+        )
 
     resume_payload = {}
     if req.strategy:
         resume_payload["strategy"] = req.strategy
     if req.action:
         resume_payload["action"] = req.action
+    if req.slot_answer:
+        resume_payload["slot_answer"] = req.slot_answer
 
     result = _run_graph(Command(resume=resume_payload), req.thread_id)
 

@@ -105,9 +105,9 @@ button.btn-uniform,
 
 
 def create_interface():
-    with gr.Blocks(title="EnterpriseMind Self-RAG") as demo:
-        gr.Markdown("## EnterpriseMind Pro")
-        gr.Markdown("企业知识问答")
+    with gr.Blocks(title="智能导购多 Agent 系统") as demo:
+        gr.Markdown("## 智能导购多 Agent 系统")
+        gr.Markdown("智能导购问答（检索、抽取、推荐、对比、SQL 分析）")
 
         thread_id = gr.State(lambda: str(uuid.uuid4()))
         session_id = gr.State(lambda: f"sess_{int(time.time())}")
@@ -121,7 +121,7 @@ def create_interface():
 
                 with gr.Row(elem_id="input-wrap"):
                     msg_input = gr.Textbox(
-                        placeholder="给 EnterpriseMind 发送消息...",
+                        placeholder="描述你的预算、用途和偏好，例如：预算3000，轻薄长续航笔记本",
                         show_label=False,
                         scale=9,
                         lines=3,
@@ -159,6 +159,11 @@ def create_interface():
                             value="accept",
                             label="低置信处理",
                             info="accept=接受当前答案；web_retry=补充联网重答；conservative_retry=保守重答",
+                        )
+                        worker_slot_input = gr.Textbox(
+                            label="导购补充信息",
+                            placeholder="例如：预算3000-4000，偏好轻薄和长续航",
+                            lines=2,
                         )
                         decision_btn = gr.Button(
                             "应用决策",
@@ -272,16 +277,28 @@ def create_interface():
                             )
                             status = "⏸️ 等待策略确认"
                         else:
-                            history.append(
-                                {
-                                    "role": "assistant",
-                                    "content": (
-                                        "当前答案置信度偏低。"
-                                        "\n请在【高级设置】选择低置信处理方式后点击“应用决策”。"
-                                    ),
-                                }
-                            )
-                            status = "⏸️ 等待低置信决策"
+                            if pending_type == "shopping_slot_confirm":
+                                history.append(
+                                    {
+                                        "role": "assistant",
+                                        "content": (
+                                            "导购建议需要补充信息。"
+                                            "\n请在【高级设置-导购补充信息】填写预算和偏好后点击“应用决策”。"
+                                        ),
+                                    }
+                                )
+                                status = "⏸️ 等待导购偏好补充"
+                            else:
+                                history.append(
+                                    {
+                                        "role": "assistant",
+                                        "content": (
+                                            "当前答案置信度偏低。"
+                                            "\n请在【高级设置】选择低置信处理方式后点击“应用决策”。"
+                                        ),
+                                    }
+                                )
+                                status = "⏸️ 等待低置信决策"
 
                         yield (
                             history,
@@ -413,6 +430,7 @@ def create_interface():
             pending: dict,
             strategy_choice: str,
             low_conf_choice: str,
+            worker_slot_input: str,
             thread_id_val: str,
             sess_id: str,
             uid: str,
@@ -478,6 +496,28 @@ def create_interface():
                 )
                 return
 
+            if pending_type == "shopping_slot_confirm":
+                slot_answer = (worker_slot_input or "").strip()
+                if not slot_answer:
+                    slot_answer = "预算不限，优先性价比"
+                history.append(
+                    {
+                        "role": "assistant",
+                        "content": f"已补充导购偏好：`{slot_answer}`，继续检索。",
+                    }
+                )
+                yield from _stream_graph(
+                    payload=Command(resume={"slot_answer": slot_answer}),
+                    history=history,
+                    config_dict=config_dict,
+                    sess_id=sess_id,
+                    uid=uid,
+                    current_question=current_question,
+                    show_reasoning=show_reasoning,
+                    show_debug=show_debug,
+                )
+                return
+
             yield (
                 history,
                 "未知决策类型",
@@ -495,8 +535,8 @@ def create_interface():
                 return {"error": "未登录"}
             mgr = get_memory_manager(sess_id, uid)
             return {
-                "working_summary": mgr.working.summary,
-                "perceptual_turns": len(mgr.perceptual.messages) // 2,
+                "short_term_summary": mgr.short_term.summary,
+                "short_term_turns": len(mgr.short_term.messages) // 2,
                 "long_term_facts": len(mgr.long_term.retrieve_relevant(uid, "test")),
             }
 
@@ -568,6 +608,7 @@ def create_interface():
                 interrupt_payload,
                 strategy_choice,
                 low_conf_choice,
+                worker_slot_input,
                 thread_id,
                 session_id,
                 user_id,

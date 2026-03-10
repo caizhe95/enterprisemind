@@ -13,8 +13,15 @@ from graph.agents.sql import sql_agent_node
 from graph.agents.search import search_agent_node
 from graph.agents.calculation import calculation_agent_node
 from graph.agents.retrieval import retrieval_agent_node
+from graph.agents.extraction import extraction_agent_node
+from graph.agents.recommendation import recommendation_agent_node
+from graph.agents.planner import planner_node, orchestrator_node, judge_node, replanner_node
 from graph.agents.response import response_agent_node
-from graph.agents.hitl import hitl_low_conf_confirm_node, hitl_strategy_confirm_node
+from graph.agents.hitl import (
+    hitl_low_conf_confirm_node,
+    hitl_strategy_confirm_node,
+    hitl_worker_confirm_node,
+)
 
 
 from config import config
@@ -112,13 +119,20 @@ def build_graph():
 
     # Supervisor 与 Specialist Agents
     workflow.add_node("supervisor", supervisor_node)
+    workflow.add_node("planner", planner_node)
+    workflow.add_node("orchestrator", orchestrator_node)
+    workflow.add_node("judge", judge_node)
+    workflow.add_node("replanner", replanner_node)
+    workflow.add_node("recommendation_agent", recommendation_agent_node)
     workflow.add_node("sql_agent", sql_agent_node)
     workflow.add_node("search_agent", search_agent_node)
     workflow.add_node("calculation_agent", calculation_agent_node)
     workflow.add_node("retrieval_agent", retrieval_agent_node)
+    workflow.add_node("extraction_agent", extraction_agent_node)
     workflow.add_node("response_agent", response_agent_node)
     workflow.add_node("hitl_strategy_confirm", hitl_strategy_confirm_node)
     workflow.add_node("hitl_low_conf_confirm", hitl_low_conf_confirm_node)
+    workflow.add_node("hitl_worker_confirm", hitl_worker_confirm_node)
 
     # 边定义
     workflow.add_edge(START, "supervisor")
@@ -128,10 +142,7 @@ def build_graph():
         "supervisor",
         lambda x: x["next_step"],
         {
-            "sql_agent": "sql_agent",
-            "search_agent": "search_agent",
-            "calculation_agent": "calculation_agent",
-            "retrieval_agent": "retrieval_agent",
+            "planner": "planner",
             "hitl_strategy_confirm": "hitl_strategy_confirm",
         },
     )
@@ -140,10 +151,22 @@ def build_graph():
         "hitl_strategy_confirm",
         lambda x: x["next_step"],
         {
+            "planner": "planner",
+        },
+    )
+
+    workflow.add_edge("planner", "orchestrator")
+    workflow.add_conditional_edges(
+        "orchestrator",
+        lambda x: x["next_step"],
+        {
             "sql_agent": "sql_agent",
             "search_agent": "search_agent",
             "calculation_agent": "calculation_agent",
             "retrieval_agent": "retrieval_agent",
+            "extraction_agent": "extraction_agent",
+            "recommendation_agent": "recommendation_agent",
+            "response_agent": "response_agent",
         },
     )
 
@@ -151,11 +174,59 @@ def build_graph():
     workflow.add_conditional_edges(
         "sql_agent",
         lambda x: x["next_step"],
-        {"response_agent": "response_agent", "end": END},
+        {"judge": "judge", "response_agent": "response_agent", "end": END},
     )
-    workflow.add_edge("search_agent", "response_agent")
-    workflow.add_edge("calculation_agent", "response_agent")
-    workflow.add_edge("retrieval_agent", "response_agent")
+    workflow.add_conditional_edges(
+        "search_agent",
+        lambda x: x["next_step"],
+        {"judge": "judge", "response_agent": "response_agent"},
+    )
+    workflow.add_conditional_edges(
+        "calculation_agent",
+        lambda x: x["next_step"],
+        {"judge": "judge", "response_agent": "response_agent"},
+    )
+    workflow.add_conditional_edges(
+        "recommendation_agent",
+        lambda x: x["next_step"],
+        {"judge": "judge", "response_agent": "response_agent"},
+    )
+    workflow.add_conditional_edges(
+        "retrieval_agent",
+        lambda x: x["next_step"],
+        {
+            "judge": "judge",
+            "response_agent": "response_agent",
+            "hitl_worker_confirm": "hitl_worker_confirm",
+            "end": END,
+        },
+    )
+    workflow.add_conditional_edges(
+        "extraction_agent",
+        lambda x: x["next_step"],
+        {
+            "judge": "judge",
+            "response_agent": "response_agent",
+        },
+    )
+    workflow.add_edge("hitl_worker_confirm", "retrieval_agent")
+    workflow.add_conditional_edges(
+        "judge",
+        lambda x: x["next_step"],
+        {
+            "orchestrator": "orchestrator",
+            "replanner": "replanner",
+            "response_agent": "response_agent",
+        },
+    )
+    workflow.add_conditional_edges(
+        "replanner",
+        lambda x: x["next_step"],
+        {
+            "orchestrator": "orchestrator",
+            "response_agent": "response_agent",
+        },
+    )
 
     # Response Agent: 可结束，或触发补充检索迭代
     workflow.add_conditional_edges(

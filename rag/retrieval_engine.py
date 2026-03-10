@@ -31,6 +31,8 @@ class RetrievalEngine:
         self.bm25: Optional[BM25Okapi] = None
         self.documents_cache: List[Dict] = []
         self.reranker = None
+        self.rerank_disabled_until = 0.0
+        self.rerank_last_error = None
         self.enhancer = (
             get_query_enhancer() if config.ENABLE_QUERY_OPTIMIZATION else None
         )
@@ -90,22 +92,36 @@ class RetrievalEngine:
         if not normalized_docs:
             return
 
-        texts = [doc["content"] for doc in normalized_docs]
-        metadatas = [doc["metadata"] for doc in normalized_docs]
-        ids = [str(doc["metadata"]["chunk_id"]) for doc in normalized_docs]
+        existing_ids = {
+            str(doc["metadata"].get("chunk_id")) for doc in self.documents_cache
+        }
+        deduped_docs: List[Dict] = []
+        seen_ids = set()
+        for doc in normalized_docs:
+            chunk_id = str(doc["metadata"]["chunk_id"])
+            if chunk_id in existing_ids or chunk_id in seen_ids:
+                continue
+            seen_ids.add(chunk_id)
+            deduped_docs.append(doc)
+
+        if not deduped_docs:
+            return
+
+        batch_size = int(getattr(config, "CHROMA_ADD_BATCH_SIZE", 2000))
 
         try:
-            self.vector_db.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+            for start in range(0, len(deduped_docs), batch_size):
+                batch = deduped_docs[start : start + batch_size]
+                texts = [doc["content"] for doc in batch]
+                metadatas = [doc["metadata"] for doc in batch]
+                ids = [str(doc["metadata"]["chunk_id"]) for doc in batch]
+                self.vector_db.add_texts(texts=texts, metadatas=metadatas, ids=ids)
         except Exception as e:
             logger.error(f"[Recall] 写入向量库失败: {e}")
             raise
 
-        existing_ids = {
-            str(doc["metadata"].get("chunk_id")) for doc in self.documents_cache
-        }
-        for doc in normalized_docs:
-            if str(doc["metadata"]["chunk_id"]) not in existing_ids:
-                self.documents_cache.append(doc)
+        for doc in deduped_docs:
+            self.documents_cache.append(doc)
 
         self._init_bm25()
 
@@ -221,6 +237,14 @@ class RetrievalEngine:
         if not candidates or not config.ENABLE_RERANK:
             return candidates
 
+        now = time.time()
+        if now < self.rerank_disabled_until:
+            return sorted(
+                candidates,
+                key=lambda x: x.get("metadata", {}).get("rrf_score", 0),
+                reverse=True,
+            )[:top_k]
+
         try:
             from sentence_transformers import CrossEncoder
 
@@ -240,6 +264,8 @@ class RetrievalEngine:
                 doc["metadata"].setdefault("retrieval_grade", None)
                 doc["metadata"].setdefault("eval_reason", None)
 
+            self.rerank_disabled_until = 0.0
+            self.rerank_last_error = None
             return sorted(
                 candidates,
                 key=lambda x: x.get("metadata", {}).get("rerank_score", 0),
@@ -247,7 +273,12 @@ class RetrievalEngine:
             )[:top_k]
 
         except Exception as e:
-            logger.warning(f"[Rerank] 失败，使用RRF: {e}")
+            cooldown = int(getattr(config, "RERANK_COOLDOWN_SECONDS", 600))
+            self.rerank_disabled_until = time.time() + cooldown
+            self.rerank_last_error = str(e)
+            logger.warning(
+                f"[Rerank] 失败，熔断{cooldown}s并使用RRF: {e}"
+            )
             return sorted(
                 candidates,
                 key=lambda x: x.get("metadata", {}).get("rrf_score", 0),

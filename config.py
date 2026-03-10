@@ -15,7 +15,7 @@ class Config:
     """
 
     # ========== 1. 核心模式切换 ==========
-    RUN_MODE = os.getenv("RUN_MODE", "local")  # 默认local，但.env已设置
+    RUN_MODE = os.getenv("RUN_MODE", "local").strip().lower()  # local / cloud
 
     # ========== 2. LLM配置（两种模式） ==========
     # Local模式：DeepSeek API
@@ -82,14 +82,26 @@ class Config:
     RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
     RRF_K = 60  # RRF融合参数
 
+    # ========== 9. 智能导购工作流 ==========
+    AGENT_MODE = os.getenv("AGENT_MODE", "worker_react").lower()
+    ENABLE_SELF_RAG_GUARD = (
+        os.getenv("ENABLE_SELF_RAG_GUARD", "true").lower() == "true"
+    )
+    REACT_MAX_STEPS = int(os.getenv("REACT_MAX_STEPS", "3"))
+
 
 config = Config()
 
 
 def check_environment():
     """启动前环境检查（简化版）"""
+    if config.RUN_MODE not in {"local", "cloud"}:
+        raise ValueError(
+            f"RUN_MODE 仅支持 'local' 或 'cloud'，当前值: {config.RUN_MODE}"
+        )
+
     print(f"\n{'=' * 50}")
-    print("🚀 EnterpriseMind 启动配置")
+    print("🚀 智能导购多 Agent 系统启动配置")
     print(f"{'=' * 50}")
     print(f"模式: {config.RUN_MODE.upper()}")
 
@@ -108,7 +120,9 @@ def check_environment():
     print(f"服务: http://{config.HOST}:{config.PORT}")
     print(f"调试模式: {'开启' if config.DEBUG else '关闭'}")
     print(f"Self-RAG: {'开启' if config.ENABLE_SELF_RAG else '关闭'}")
+    print(f"Self-RAG Guard: {'开启' if config.ENABLE_SELF_RAG_GUARD else '关闭'}")
     print(f"查询优化: {'开启' if config.ENABLE_QUERY_OPTIMIZATION else '关闭'}")
+    print(f"Agent模式: {config.AGENT_MODE}")
     print(
         "HITL: ambiguity<={level}, dual_route_confirm={dual}, low_conf_confirm={low}".format(
             level=config.HITL_AMBIGUITY_CONFIDENCE_LEVEL,

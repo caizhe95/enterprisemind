@@ -8,10 +8,14 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-123456}@db:5432/enterprisemind
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-deepseek-r1:14b}
+      - OLLAMA_EMBEDDING_MODEL=${OLLAMA_EMBEDDING_MODEL:-bge-m3}
       - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
       - LANGSMITH_TRACING=true
       - LANGSMITH_PROJECT=enterprisemind-docker
-      - RUN_MODE=local
+      - RUN_MODE=${RUN_MODE:-local}
       - ENABLE_SELF_RAG=${ENABLE_SELF_RAG:-true}
       - ENABLE_QUERY_OPTIMIZATION=${ENABLE_QUERY_OPTIMIZATION:-true}
     volumes:

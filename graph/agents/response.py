@@ -6,7 +6,6 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from graph.state import AgentState
 from memory.memory_manager import get_memory_manager
-from rag.evaluator import UtilityGrade
 from logger import logger
 from config import config
 
@@ -15,6 +14,11 @@ from graph.agents.common import (
     get_self_rag_evaluator,
     build_context,
     extract_citations,
+)
+from graph.agents.field_utils import (
+    extract_fields_by_text,
+    has_explicit_field_list_signal,
+    is_placeholder_field,
 )
 
 
@@ -30,9 +34,11 @@ def _extract_target_fields(question: str, llm) -> list[str]:
     if not has_multi_field_signal:
         return []
 
-    text_first = _extract_fields_by_text(question)
+    text_first = extract_fields_by_text(question)
     if len(text_first) >= 2:
         return text_first
+    if not has_explicit_field_list_signal(question):
+        return []
 
     prompt = (
         "从下面问题中提取'需要逐项回答的字段名'，仅返回JSON数组字符串。\n"
@@ -57,7 +63,7 @@ def _extract_target_fields(question: str, llm) -> list[str]:
                         continue
                     if len(s) > 20:
                         continue
-                    if _is_placeholder_field(s):
+                    if is_placeholder_field(s):
                         continue
                     cleaned.append(s)
                 cleaned = list(dict.fromkeys(cleaned))
@@ -80,54 +86,13 @@ def _extract_target_fields(question: str, llm) -> list[str]:
     reduced = []
     for p in parts:
         m = re.search(
-            r"(时间|日期|价格|售价|费用|续航|电池|容量|参数|规格|型号|版本|颜色|重量|尺寸|分辨率|屏幕|性能|功能|防水)$",
+            r"(时间|日期|品类|价格|售价|费用|续航|电池|容量|参数|规格|型号|版本|颜色|重量|尺寸|分辨率|屏幕|性能|功能|防水)$",
             p,
         )
         reduced.append(m.group(1) if m else p[-8:])
     reduced = list(dict.fromkeys([x for x in reduced if x]))
-    reduced = [x for x in reduced if not _is_placeholder_field(x)]
+    reduced = [x for x in reduced if not is_placeholder_field(x)]
     return reduced[:8] if len(reduced) >= 2 else []
-
-
-def _is_placeholder_field(field: str) -> bool:
-    s = (field or "").strip().lower()
-    return bool(re.match(r"^(字段\d*|field\d*|item\d*)$", s))
-
-
-def _extract_fields_by_text(question: str) -> list[str]:
-    """优先从问题文本直接抽取字段，避免LLM返回占位字段。"""
-    text = re.sub(r"[？?。！!]", "", question).strip()
-    for marker in [
-        "分别是什么",
-        "分别是",
-        "分别为",
-        "分别",
-        "各自",
-        "各是多少",
-        "是多少",
-    ]:
-        if marker in text:
-            text = text.split(marker)[0].strip()
-            break
-
-    parts = re.split(r"[、,，/]|以及|和|及|与", text)
-    parts = [p.strip() for p in parts if p.strip()]
-    fields = []
-    for p in parts:
-        # 去掉常见实体/主语前缀，保留字段尾部
-        m = re.search(
-            r"(上市时间|发布时间|价格|售价|费用|续航|电池|充电|参数|规格|型号|版本|颜色|重量|尺寸|分辨率|屏幕|性能|功能|防水|容量|保修|质保)$",
-            p,
-        )
-        c = m.group(1) if m else p
-        c = c.strip("：: ")
-        if not c or _is_placeholder_field(c):
-            continue
-        if len(c) > 12:
-            continue
-        fields.append(c)
-    fields = list(dict.fromkeys(fields))
-    return fields[:8] if len(fields) >= 2 else []
 
 
 def _build_messages(
@@ -251,6 +216,132 @@ def _select_docs_for_fields(
     return selected[:max_docs]
 
 
+def _format_metric_value(metric: str, value: object) -> str:
+    if value is None:
+        return "根据现有资料无法确定"
+    if metric in {"价格", "售价", "费用"}:
+        return f"{value}元"
+    return str(value)
+
+
+def _build_structured_comparison_answer(state: AgentState) -> str | None:
+    context = state.get("comparison_context") or {}
+    values = context.get("values") or []
+    winner = context.get("winner")
+    metric = context.get("metric") or "价格"
+    if not winner or len(values) < 2:
+        return None
+
+    calc_result = None
+    for item in reversed(state.get("step_results") or []):
+        if item.get("worker") == "calculation_agent":
+            calc_result = item
+            break
+
+    difference = None
+    if calc_result:
+        artifacts = calc_result.get("artifacts") or {}
+        tool_results = artifacts.get("tool_results") or []
+        for tool_result in tool_results:
+            text = str(tool_result.get("result") or "")
+            match = re.search(r"=\s*(-?\d+(?:\.\d+)?)", text)
+            if match:
+                raw_num = float(match.group(1))
+                difference = int(raw_num) if raw_num.is_integer() else raw_num
+                break
+
+    if difference is None:
+        numeric_values = [int(v["value"]) for v in values if v.get("value") is not None]
+        if len(numeric_values) >= 2:
+            difference = max(numeric_values) - min(numeric_values)
+
+    if difference is None:
+        return None
+
+    if metric == "价格":
+        return f"{winner}更贵，贵{difference}元。"
+    return f"{winner}的{metric}更高，相差{difference}。"
+
+
+def _build_structured_field_list_answer(state: AgentState) -> str | None:
+    question = state["question"]
+    fields = extract_fields_by_text(question)
+    if len(fields) < 2:
+        return None
+
+    value_map: dict[str, str] = {}
+    for item in state.get("step_results") or []:
+        if item.get("worker") != "extraction_agent":
+            continue
+        artifacts = item.get("artifacts") or {}
+        artifact_fields = artifacts.get("fields") or {}
+        metrics = artifacts.get("metrics") or {}
+
+        for field in fields:
+            if field in value_map:
+                continue
+            if field in artifact_fields:
+                value_map[field] = str(artifact_fields[field])
+                continue
+            metric_payload = metrics.get(field)
+            if isinstance(metric_payload, dict) and metric_payload.get("value") is not None:
+                value_map[field] = _format_metric_value(field, metric_payload["value"])
+                continue
+
+    if not value_map:
+        return None
+
+    parts = [
+        f"{field}为{value_map.get(field, '根据现有资料无法确定')}"
+        for field in fields
+    ]
+    return "，".join(parts) + "。"
+
+
+def _build_structured_single_fact_answer(state: AgentState) -> str | None:
+    for item in reversed(state.get("step_results") or []):
+        if item.get("worker") != "extraction_agent":
+            continue
+        artifacts = item.get("artifacts") or {}
+        fields = artifacts.get("fields") or {}
+        metrics = artifacts.get("metrics") or {}
+        if fields:
+            field, value = next(iter(fields.items()))
+            return f"{field}为{value}。"
+        if metrics:
+            field, payload = next(iter(metrics.items()))
+            return f"{field}为{_format_metric_value(field, payload.get('value'))}。"
+    return None
+
+
+def _try_build_structured_answer(state: AgentState) -> str | None:
+    question_type = state.get("question_type")
+    if question_type == "comparison":
+        return _build_structured_comparison_answer(state)
+    if question_type == "field_list":
+        return _build_structured_field_list_answer(state)
+    if question_type == "single_fact":
+        return _build_structured_single_fact_answer(state)
+    if question_type == "recommendation":
+        context = state.get("recommendation_context") or {}
+        recommendations = context.get("recommendations") or []
+        if recommendations:
+            top = recommendations[0]
+            reasons = "、".join(top.get("reasons") or []) or "整体更符合当前需求"
+            answer = f"更推荐{top['name']}"
+            if top.get("price") is not None:
+                answer += f"，价格约{top['price']}元"
+            answer += f"，原因是{reasons}"
+            if len(recommendations) > 1:
+                backup = recommendations[1]
+                answer += f"；备选可以看{backup['name']}"
+                backup_reasons = "、".join(backup.get("reasons") or [])
+                if backup_reasons:
+                    answer += f"，它的优势是{backup_reasons}"
+            return answer + "。"
+    return None
+
+
 def reflective_generate_node(state: AgentState) -> dict:
     """
     Self-RAG 反思式生成
@@ -276,25 +367,17 @@ def reflective_generate_node(state: AgentState) -> dict:
 
         logger.info(
             f"[Self-RAG] 生成评估: 支持度={eval_result['support_grade']}, "
-            f"有用性={eval_result['utility_grade']}"
+            f"幻觉风险={eval_result['is_hallucination_risk']}"
         )
 
         final_answer = initial_answer
         citations = extract_citations(docs_for_answer)
 
-        if eval_result["is_hallucination_risk"]:
+        if eval_result["is_hallucination_risk"] and config.ENABLE_SELF_RAG_GUARD:
             logger.warning("[Self-RAG] 检测到幻觉风险，严格基于上下文重生成")
             strict_messages = _build_messages(question, context, fields, strict=True)
             strict_response = llm.invoke(strict_messages)
             final_answer = _backfill_missing_fields(strict_response.content, fields)
-
-        elif eval_result["utility_grade"] == UtilityGrade.NOT_USEFUL:
-            if state.get("retrieval_count", 0) < 2:
-                return {
-                    "next_step": "adaptive_retrieve",
-                    "retrieval_count": state.get("retrieval_count", 0),
-                }
-            final_answer += "\n\n[注：现有资料可能无法完整回答该问题]"
 
         if config.HITL_ENABLE_LOW_CONF_CONFIRM and (
             eval_result.get("support_grade") in {"partially_supported", "no_support"}
@@ -325,6 +408,7 @@ def reflective_generate_node(state: AgentState) -> dict:
             "messages": [AIMessage(content=final_answer)],
             "next_step": "end",
             "self_rag_eval": eval_result,
+            "guardrail_result": eval_result,
         }
 
     except Exception as e:
@@ -334,6 +418,26 @@ def reflective_generate_node(state: AgentState) -> dict:
 
 def response_agent_node(state: AgentState) -> dict:
     """响应Agent：整合多Agent输出并完成最终回答"""
+    structured_answer = _try_build_structured_answer(state)
+    if structured_answer:
+        citations = extract_citations(state.get("retrieved_docs", []))
+        return {
+            "final_answer": structured_answer,
+            "citations": citations,
+            "messages": [AIMessage(content=structured_answer)],
+            "next_step": "end",
+            "self_rag_eval": None,
+            "active_agent": "response_agent",
+            "agent_outputs": [
+                {
+                    "agent": "response_agent",
+                    "has_final_answer": True,
+                    "self_rag_eval": None,
+                    "mode": "structured_synthesis",
+                }
+            ],
+        }
+
     if not config.ENABLE_SELF_RAG:
         docs = state.get("retrieved_docs", [])
         question = state["question"]
@@ -384,8 +488,10 @@ def response_agent_node(state: AgentState) -> dict:
             }
 
     result = reflective_generate_node(state)
+    if state.get("execution_plan") and result.get("next_step") == "retrieval_agent":
+        result["next_step"] = "end"
     next_map = {
-        "adaptive_retrieve": "retrieval_agent",
+        "retrieval_agent": "retrieval_agent",
         "hitl_low_conf_confirm": "hitl_low_conf_confirm",
         "end": "end",
     }

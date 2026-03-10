@@ -15,7 +15,7 @@ def _should_confirm_ambiguity(analysis: dict) -> bool:
     if confidence not in rank:
         confidence = "medium"
 
-    by_confidence = rank[confidence] <= rank[threshold]
+    by_confidence = rank[confidence] < rank[threshold]
     dual_route = bool(
         analysis.get("should_try_search") and analysis.get("should_try_retrieval")
     )
@@ -60,13 +60,7 @@ def supervisor_node(state: AgentState) -> dict:
                 ],
             }
     intent = routing["intent"]
-    mapping = {
-        "sql": "sql_agent",
-        "search": "search_agent",
-        "calculation": "calculation_agent",
-        "retrieval": "retrieval_agent",
-    }
-    next_step = mapping[intent]
+    next_step = "planner"
     decision = (
         f"Supervisor路由: {intent} -> {next_step} | "
         f"reason={routing['reason']} | confidence={routing['confidence']} | question={question}"

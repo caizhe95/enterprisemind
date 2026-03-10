@@ -1,4 +1,4 @@
-# Dockerfile - EnterpriseMind 生产部署
+# Dockerfile - 智能导购多 Agent 系统生产部署
 FROM python:3.11-slim AS builder
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

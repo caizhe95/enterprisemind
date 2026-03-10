@@ -110,6 +110,26 @@ def analyze_intent(question: str) -> Dict[str, Any]:
             "should_try_retrieval": False,
         }
 
+    shopping_sql_keywords = [
+        "库存",
+        "现货",
+        "余量",
+        "优惠",
+        "折扣",
+        "活动价",
+        "券后",
+        "实时价格",
+        "到手价",
+    ]
+    if any(k in lowered for k in shopping_sql_keywords):
+        return {
+            "intent": "sql",
+            "reason": "命中导购实时数据关键词（库存/价格/活动）",
+            "confidence": "high",
+            "should_try_search": False,
+            "should_try_retrieval": True,
+        }
+
     sql_keywords = [
         "销售额",
         "销量",
@@ -131,6 +151,33 @@ def analyze_intent(question: str) -> Dict[str, Any]:
             "confidence": "high",
             "should_try_search": False,
             "should_try_retrieval": False,
+        }
+
+    shopping_retrieval_keywords = [
+        "推荐",
+        "导购",
+        "对比",
+        "哪个好",
+        "怎么选",
+        "适合",
+        "预算",
+        "参数",
+        "续航",
+        "屏幕",
+        "拍照",
+        "耳机",
+        "手机",
+        "笔记本",
+        "手表",
+        "家电",
+    ]
+    if any(k in lowered for k in shopping_retrieval_keywords):
+        return {
+            "intent": "retrieval",
+            "reason": "命中导购咨询关键词，优先商品知识检索",
+            "confidence": "high",
+            "should_try_search": False,
+            "should_try_retrieval": True,
         }
 
     # 明确参数问答：更通用的结构化识别，直达企业检索，不触发模糊确认

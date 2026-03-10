@@ -1,13 +1,13 @@
-"""分层缓存管理器 - 支持内存+持久化"""
+"""分层缓存管理器 - 支持内存+持久化。"""
 
 import hashlib
 import json
 import time
 from typing import Any, Optional, Dict, Callable
 from functools import wraps
+from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
-from dataclasses import dataclass
 
 
 @dataclass
@@ -80,8 +80,19 @@ class MemoryCache:
         }
 
 
+@dataclass
+class CacheEntry:
+    """持久化缓存条目。"""
+
+    key: str
+    value: Any
+    created_at: float
+    expire_at: Optional[float]
+    access_count: int = 0
+
+
 class PersistentCache:
-    """SQLite持久化缓存"""
+    """基于SQLite的持久化缓存。"""
 
     def __init__(
         self, db_path: str = "./cache/persistent_cache.db", default_ttl: int = 3600
@@ -94,32 +105,56 @@ class PersistentCache:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS cache (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    expire_at REAL,
-                    created_at REAL DEFAULT (unixepoch())
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache
+                (
+                    key          TEXT PRIMARY KEY,
+                    value        TEXT NOT NULL,
+                    created_at   REAL    DEFAULT (unixepoch()),
+                    expire_at    REAL,
+                    access_count INTEGER DEFAULT 0
                 )
-            """)
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_expire ON cache(expire_at)")
             conn.execute("DELETE FROM cache WHERE expire_at < unixepoch()")
             conn.commit()
+
+    def _generate_key(self, *args, **kwargs) -> str:
+        content = json.dumps(
+            {"args": args, "kwargs": kwargs}, sort_keys=True, default=str
+        )
+        return hashlib.sha256(content.encode()).hexdigest()
 
     def get(self, key: str) -> Optional[Any]:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute(
-                    "SELECT value FROM cache WHERE key = ? AND (expire_at IS NULL OR expire_at > unixepoch())",
+                    """
+                    SELECT value, expire_at, access_count
+                    FROM cache
+                    WHERE key = ?
+                      AND (expire_at IS NULL OR expire_at > unixepoch())
+                    """,
                     (key,),
                 )
                 row = cursor.fetchone()
+
                 if row:
+                    value, _expire_at, count = row
+                    conn.execute(
+                        "UPDATE cache SET access_count = ? WHERE key = ?",
+                        (count + 1, key),
+                    )
+                    conn.commit()
                     self.stats.hits += 1
-                    return json.loads(row[0])
+                    return json.loads(value)
+
                 self.stats.misses += 1
                 return None
-        except Exception:
+        except Exception as e:
+            print(f"[PersistentCache] 读取错误: {e}")
             self.stats.misses += 1
             return None
 
@@ -130,35 +165,73 @@ class PersistentCache:
 
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
-                    "INSERT OR REPLACE INTO cache (key, value, expire_at) VALUES (?, ?, ?)",
+                    """
+                    INSERT OR REPLACE INTO cache (key, value, expire_at, access_count)
+                    VALUES (?, ?, ?, 0)
+                    """,
                     (key, serialized, expire_at),
                 )
                 conn.commit()
                 self.stats.size = conn.execute("SELECT COUNT(*) FROM cache").fetchone()[
                     0
                 ]
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[PersistentCache] 写入错误: {e}")
+
+    def delete(self, key: str):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM cache WHERE key = ?", (key,))
+            conn.commit()
 
     def clear(self):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DELETE FROM cache")
             conn.commit()
+        self.stats = CacheStats()
 
     def get_stats(self) -> Dict:
         try:
             with sqlite3.connect(self.db_path) as conn:
-                count = conn.execute("SELECT COUNT(*) FROM cache").fetchone()[0]
+                total = conn.execute("SELECT COUNT(*) FROM cache").fetchone()[0]
+                expired = conn.execute(
+                    "SELECT COUNT(*) FROM cache WHERE expire_at < unixepoch()"
+                ).fetchone()[0]
         except Exception:
-            count = 0
+            total = 0
+            expired = 0
 
         return {
-            "type": "persistent",
-            "size": count,
+            "total_keys": total,
+            "expired_keys": expired,
             "hits": self.stats.hits,
             "misses": self.stats.misses,
             "hit_rate": f"{self.stats.hit_rate:.2%}",
+            "db_path": str(self.db_path),
         }
+
+    def get_cache_info(self, key: str) -> Optional[CacheEntry]:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT value, created_at, expire_at, access_count
+                    FROM cache
+                    WHERE key = ?
+                    """,
+                    (key,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return CacheEntry(
+                        key=key,
+                        value=json.loads(row[0]),
+                        created_at=row[1],
+                        expire_at=row[2],
+                        access_count=row[3],
+                    )
+        except Exception as e:
+            print(f"[PersistentCache] 查询错误: {e}")
+        return None
 
 
 class CacheManager:
@@ -225,9 +298,18 @@ class CacheManager:
         return hashlib.md5(content.encode()).hexdigest()
 
     def get_stats(self) -> Dict:
+        persistent_stats = self.persistent.get_stats()
         return {
             "memory": self.memory.get_stats(),
-            "persistent": self.persistent.get_stats(),
+            "persistent": {
+                "type": "persistent",
+                "size": persistent_stats.get("total_keys", 0),
+                "expired_keys": persistent_stats.get("expired_keys", 0),
+                "hits": persistent_stats.get("hits", 0),
+                "misses": persistent_stats.get("misses", 0),
+                "hit_rate": persistent_stats.get("hit_rate", "0.00%"),
+                "db_path": persistent_stats.get("db_path"),
+            },
         }
 
     def clear_all(self):

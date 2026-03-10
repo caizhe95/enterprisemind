@@ -2,7 +2,9 @@
 
 from graph.state import AgentState
 from tools.postgres_sql_tool import sql_query, sql_explain, generate_sql_with_examples
+from tools.sql_guard import sql_guard
 from cache.cache_manager import cache_manager
+from graph.agents.worker_contract import build_worker_output
 
 
 @cache_manager.cached(cache_type="persistent", ttl=86400 * 7, key_prefix="sql_gen")
@@ -12,7 +14,7 @@ def generate_sql_cached(question: str) -> str:
 
 def sql_generate_node(state: AgentState) -> dict:
     try:
-        sql = generate_sql_cached(state["question"])
+        sql = generate_sql_cached(state.get("worker_input") or state["question"])
         return {"generated_sql": sql, "next_step": "sql_check"}
     except Exception as e:
         return {"final_answer": f"SQL生成失败: {e}", "next_step": "end"}
@@ -20,21 +22,24 @@ def sql_generate_node(state: AgentState) -> dict:
 
 def sql_safety_check_node(state: AgentState) -> dict:
     sql = state.get("generated_sql", "")
-    dangerous = ["DELETE", "UPDATE", "INSERT", "DROP", "ALTER", "TRUNCATE"]
-    is_dangerous = any(d in sql.upper() for d in dangerous)
-
-    if not is_dangerous:
-        return {"next_step": "sql_execute", "observation": "SQL安全检查通过"}
+    guard_result = sql_guard.invoke({"sql": sql})
+    if guard_result.get("allowed"):
+        return {
+            "next_step": "sql_execute",
+            "observation": guard_result.get("reason", "SQL安全检查通过"),
+            "tool_results": [{"tool": "sql_guard", "result": guard_result}],
+        }
 
     return {
         "next_step": "sql_explain_only",
-        "observation": "检测到危险SQL，用户侧仅允许查询，已自动降级为仅解释SQL",
+        "observation": guard_result.get("reason", "检测到危险SQL"),
+        "tool_results": [{"tool": "sql_guard", "result": guard_result}],
     }
 
 
 def sql_execute_node(state: AgentState) -> dict:
     try:
-        result = sql_query.invoke({"question": state["question"]})
+        result = sql_query.invoke({"question": state.get("worker_input") or state["question"]})
         return {
             "sql_result": result,
             "tool_results": [{"tool": "sql_query", "result": result}],
@@ -45,7 +50,7 @@ def sql_execute_node(state: AgentState) -> dict:
 
 
 def sql_explain_only_node(state: AgentState) -> dict:
-    result = sql_explain.invoke({"question": state["question"]})
+    result = sql_explain.invoke({"question": state.get("worker_input") or state["question"]})
     return {
         "final_answer": f"生成的SQL（未执行）：\n```sql\n{result}\n```",
         "next_step": "end",
@@ -84,12 +89,28 @@ def sql_agent_node(state: AgentState) -> dict:
         }
 
     executed = sql_execute_node({**merged_state, **checked})
+    combined_tool_results = [*(checked.get("tool_results") or []), *(executed.get("tool_results") or [])]
+    next_step = "judge" if state.get("execution_plan") else "response_agent"
+    normalized_output = build_worker_output(
+        worker="sql_agent",
+        status="success" if executed.get("sql_result") else "partial",
+        summary=executed.get("observation", "SQL执行完成"),
+        artifacts={
+            "generated_sql": generated.get("generated_sql"),
+            "sql_result": executed.get("sql_result"),
+            "tool_results": combined_tool_results,
+        },
+        signals=["analytics_ready"] if executed.get("sql_result") else [],
+        confidence=0.85 if executed.get("sql_result") else 0.3,
+    )
     return {
         **generated,
         **checked,
         **executed,
-        "next_step": "response_agent",
+        "tool_results": combined_tool_results,
+        "next_step": next_step,
         "active_agent": "sql_agent",
+        "last_worker_output": normalized_output,
         "agent_outputs": [
             {"agent": "sql_agent", "has_sql_result": bool(executed.get("sql_result"))}
         ],

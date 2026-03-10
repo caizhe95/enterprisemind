@@ -20,8 +20,8 @@ class AdvancedDocumentProcessor:
         self.default_overlap = 50
         self.chunk_profiles = {
             "markdown": {
-                "chunk_size": 600,
-                "chunk_overlap": 80,
+                "chunk_size": 720,
+                "chunk_overlap": 100,
                 "semantic_threshold": 0.50,
             },
             "pdf": {"chunk_size": 520, "chunk_overlap": 60, "semantic_threshold": 0.48},
@@ -236,7 +236,20 @@ class AdvancedDocumentProcessor:
                 }
             )
             chunk.page_content = chunk_text
-            final_chunks.append(chunk)
+            # 超长块二次切分，避免单块过大影响召回稳定性
+            if self._token_count(chunk.page_content) > int(self._current_chunk_size * 1.3):
+                sub_chunks = self._current_splitter.create_documents([chunk.page_content])
+                for idx, sub in enumerate(sub_chunks, start=1):
+                    sub.metadata.update(
+                        {
+                            **chunk.metadata,
+                            "sub_chunk_index": idx,
+                            "chunk_type": "markdown_sub_section",
+                        }
+                    )
+                    final_chunks.append(sub)
+            else:
+                final_chunks.append(chunk)
 
         return final_chunks if final_chunks else [doc]
 
