@@ -27,6 +27,7 @@ logs/
 *.log
 cache/*.db
 memory/*.db
+tests/*.db
 chroma_db/
 models/
 *.sqlite

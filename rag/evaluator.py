@@ -1,5 +1,5 @@
 # self_rag/evaluator.py
-"""Self-RAG 评估器 - 细粒度自反思"""
+"""Self-RAG 评估器 - 轻量质量控制闭环。"""
 
 import re
 from typing import List, Dict
@@ -23,14 +23,6 @@ class SupportGrade(str, Enum):
     FULLY_SUPPORTED = "fully_supported"  # 完全由检索内容支撑
     PARTIALLY_SUPPORTED = "partially_supported"  # 部分支撑，有推测
     NO_SUPPORT = "no_support"  # 无支撑，幻觉风险高
-
-
-class UtilityGrade(str, Enum):
-    """回答有用性评级"""
-
-    HIGHLY_USEFUL = "highly_useful"  # 直接回答用户问题
-    SOMEWHAT_USEFUL = "somewhat_useful"  # 部分回答
-    NOT_USEFUL = "not_useful"  # 未回答或答非所问
 
 
 class SelfRAGEvaluator:
@@ -100,11 +92,17 @@ class SelfRAGEvaluator:
         else:
             overall = RetrievalGrade.IRRELEVANT
 
+        retry_strategy = None
+        if overall == RetrievalGrade.PARTIALLY_RELEVANT:
+            retry_strategy = "supplement"
+        elif overall == RetrievalGrade.IRRELEVANT:
+            retry_strategy = "rewrite"
+
         return {
             "overall": overall,
             "details": evaluated_docs,
-            "needs_rewrite": overall == RetrievalGrade.IRRELEVANT,
-            "needs_continue": overall == RetrievalGrade.PARTIALLY_RELEVANT,
+            "needs_retry": retry_strategy is not None,
+            "retry_strategy": retry_strategy,
         }
 
     @staticmethod
@@ -145,22 +143,15 @@ class SelfRAGEvaluator:
     def evaluate_generation(
         self, question: str, answer: str, documents: List[Dict]
     ) -> Dict:
-        """
-        评估生成质量（支持度 + 有用性）
-        Self-RAG: [Is Supported?] [Is Useful?]
-        """
-        # 无证据时直接给出硬约束，避免出现“无支撑但高有用”的误导性评估。
+        """评估答案是否被证据支撑，用于幻觉风险控制。"""
         if not documents:
             return {
                 "support_grade": SupportGrade.NO_SUPPORT,
-                "utility_grade": UtilityGrade.NOT_USEFUL,
                 "support_reason": "no documents retrieved",
-                "utility_reason": "no evidence context available",
-                "actions": ["supplement_retrieval", "regenerate_with_stricter_context"],
+                "needs_regenerate": True,
                 "is_hallucination_risk": True,
             }
 
-        # 1. 评估支持度（幻觉检测）
         evidence = "\n\n".join(
             [
                 f"[{doc['metadata'].get('file_name', 'doc')}]: {doc['content'][:500]}"
@@ -175,7 +166,6 @@ class SelfRAGEvaluator:
 
         support_result = self.llm.invoke(support_prompt).content.strip().lower()
 
-        # 解析支持度
         if "full" in support_result or "完全" in support_result:
             support_grade = SupportGrade.FULLY_SUPPORTED
         elif "partial" in support_result or "部分" in support_result:
@@ -183,70 +173,36 @@ class SelfRAGEvaluator:
         else:
             support_grade = SupportGrade.NO_SUPPORT
 
-        # 2. 评估有用性
-        utility_prompt = PromptRegistry.get(
-            "self_rag_utility_eval", variables={"question": question, "answer": answer}
-        )
-
-        utility_result = self.llm.invoke(utility_prompt).content.strip().lower()
-
-        if (
-            "highly" in utility_result
-            or "非常" in utility_result
-            or "很好" in utility_result
-        ):
-            utility_grade = UtilityGrade.HIGHLY_USEFUL
-        elif "somewhat" in utility_result or "部分" in utility_result:
-            utility_grade = UtilityGrade.SOMEWHAT_USEFUL
-        else:
-            utility_grade = UtilityGrade.NOT_USEFUL
-
-        # 3. 决策建议
-        actions = []
-        if support_grade == SupportGrade.NO_SUPPORT:
-            actions.append("regenerate_with_stricter_context")  # 严格基于上下文重生成
-        elif support_grade == SupportGrade.PARTIALLY_SUPPORTED:
-            actions.append("supplement_retrieval")  # 补充检索
-
-        if utility_grade == UtilityGrade.NOT_USEFUL:
-            actions.append("rewrite_answer")  # 重写回答
-
         return {
             "support_grade": support_grade,
-            "utility_grade": utility_grade,
             "support_reason": support_result,
-            "utility_reason": utility_result,
-            "actions": actions,
+            "needs_regenerate": support_grade == SupportGrade.NO_SUPPORT,
             "is_hallucination_risk": support_grade == SupportGrade.NO_SUPPORT,
         }
 
     def generate_reflection_query(
         self, original_query: str, previous_docs: List[Dict], feedback: str
     ) -> str:
-        """
-        基于反思生成新的查询（查询分解或改写）
-        Self-RAG: 当检索失败时，分解问题或改写关键词
-        """
-        # 提取之前检索的关键词（避免重复）
-        previous_keywords = set()
-        for doc in previous_docs:
-            previous_keywords.update(doc["content"][:100].split())
+        """在检索无关时生成一个更具体的新查询。"""
+        previous_keywords = []
+        for doc in previous_docs[:3]:
+            content = doc.get("content", "")[:40].strip()
+            if content:
+                previous_keywords.append(content)
 
         prompt = PromptRegistry.get(
             "self_rag_rewrite",
             variables={
                 "original_query": original_query,
                 "feedback": feedback,
-                "previous_keywords": ", ".join(list(previous_keywords)[:10]),
+                "previous_keywords": " | ".join(previous_keywords),
             },
         )
 
         result = self.llm.invoke(prompt).content.strip()
         result = self._sanitize_reflection_query(result)
 
-        # 确保新查询确实不同
         if result.lower() == original_query.lower():
-            # 强制添加限定词
             result = f"{original_query} 详细信息"
 
         return result
@@ -275,13 +231,7 @@ class AdaptiveRetriever:
     def retrieve_with_reflection(
         self, query: str, iteration: int = 0, previous_docs: List[Dict] = None
     ) -> Dict:
-        """
-        带反思的检索：
-        1. 初始检索 → 评估
-        2. 如果部分相关 → 补充检索（查询扩展）
-        3. 如果无关 → 改写查询重新检索
-        4. 如果高度相关 → 直接返回
-        """
+        """检索后评估，不够好就补检索或改写查询。"""
         if iteration >= self.max_iterations:
             logger.warning("[Self-RAG] 达到最大迭代次数，返回当前最佳结果")
             final_docs = previous_docs or []
@@ -322,7 +272,6 @@ class AdaptiveRetriever:
             }
 
         elif eval_result["overall"] == RetrievalGrade.PARTIALLY_RELEVANT:
-            # 部分相关：查询扩展补充检索
             logger.info("[Self-RAG] 部分相关，补充检索...")
             expanded_query = f"{query} 详细参数 规格"
             return self.retrieve_with_reflection(
@@ -330,7 +279,6 @@ class AdaptiveRetriever:
             )
 
         else:
-            # 无关：改写查询
             logger.info("[Self-RAG] 检索无关，改写查询...")
             new_query = self.evaluator.generate_reflection_query(
                 query,

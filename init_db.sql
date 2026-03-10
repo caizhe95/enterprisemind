@@ -1,84 +1,132 @@
--- init_db.sql - 1000条模拟数据版本
--- 清空旧数据（如需重置）
--- TRUNCATE TABLE sales, products RESTART IDENTITY;
+-- init_db.sql - 实习项目一致版本（对应 products.md / sales.md）
+-- 如需重置：
+-- DROP TABLE IF EXISTS sales;
+-- DROP TABLE IF EXISTS products;
 
--- 创建产品表
+-- 产品表（与知识源 products.md 对齐）
 CREATE TABLE IF NOT EXISTS products (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    category VARCHAR(50),
-    price DECIMAL(10,2),
-    stock_quantity INTEGER DEFAULT 0,
+    sku VARCHAR(20) PRIMARY KEY,
+    name VARCHAR(120) NOT NULL,
+    category VARCHAR(40) NOT NULL,
+    brand VARCHAR(40) NOT NULL,
+    price DECIMAL(10,2) NOT NULL,
+    launch_date DATE NOT NULL,
+    warranty VARCHAR(30) NOT NULL,
+    highlights TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 创建销售表
+-- 销售表（与知识源 sales.md 对齐）
 CREATE TABLE IF NOT EXISTS sales (
     id SERIAL PRIMARY KEY,
-    product_id INTEGER REFERENCES products(id),
-    quantity INTEGER NOT NULL,
-    amount DECIMAL(12,2) NOT NULL,
     sale_date DATE NOT NULL,
-    region VARCHAR(20),
-    salesperson VARCHAR(50),
-    status VARCHAR(20) DEFAULT 'completed'
+    sku VARCHAR(20) NOT NULL REFERENCES products(sku),
+    product_name VARCHAR(120) NOT NULL,
+    category VARCHAR(40) NOT NULL,
+    region VARCHAR(20) NOT NULL,
+    channel VARCHAR(10) NOT NULL,
+    quantity INTEGER NOT NULL,
+    amount DECIMAL(14,2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 插入产品数据
-INSERT INTO products (name, category, price, stock_quantity) VALUES
-('智能手表Pro', '电子产品', 1299.00, 500),
-('无线耳机Max', '电子产品', 899.00, 800),
-('人体工学椅', '办公家具', 1599.00, 200),
-('机械键盘', '电子产品', 499.00, 1000),
-('4K显示器', '电子产品', 2199.00, 300),
-('智能手环Lite', '电子产品', 299.00, 1500),
-('降噪耳机Pro', '电子产品', 1299.00, 600),
-('升降办公桌', '办公家具', 2499.00, 150),
-('曲面显示器', '电子产品', 1899.00, 400),
-('机械鼠标', '电子产品', 299.00, 800),
-('平板电脑支架', '办公配件', 159.00, 2000),
-('USB扩展坞', '电子配件', 399.00, 1200),
-('无线充电器', '电子配件', 199.00, 1500),
-('蓝牙音箱', '电子产品', 599.00, 700),
-('智能台灯', '智能家居', 349.00, 900)
-ON CONFLICT DO NOTHING;
+-- 清空旧数据（按当前结构重建）
+TRUNCATE TABLE sales, products RESTART IDENTITY;
 
--- 生成1000条销售记录（使用递归CTE）
-WITH RECURSIVE
-sales_data AS (
-    SELECT
-        generate_series(1, 1000) as id,
-        (random() * 14 + 1)::int as product_id,  -- 15个产品
-        (random() * 50 + 1)::int as quantity,
-        CURRENT_DATE - (random() * 365)::int as sale_date,
-        (ARRAY['华东', '华北', '华南', '西部', '华中'])[floor(random() * 5 + 1)] as region,
-        (ARRAY['张三', '李四', '王五', '赵六', '钱七', '孙八', '周九', '吴十'])[floor(random() * 8 + 1)] as salesperson
+-- 插入120个产品（8个品类循环）
+WITH cat_cfg AS (
+    SELECT * FROM (
+        VALUES
+        (1, '手机', '星澜', 1499, 6999),
+        (2, '笔记本', '智核', 3599, 10999),
+        (3, '平板', '星澜', 1499, 5999),
+        (4, '智能手表', '云途', 699, 2999),
+        (5, '蓝牙耳机', '锐动', 199, 1999),
+        (6, '电视', '巨幕', 2299, 12999),
+        (7, '空调', '清风', 1999, 7999),
+        (8, '冰箱', '冷峰', 2499, 9999)
+    ) AS t(idx, category, brand, min_price, max_price)
+),
+seq AS (
+    SELECT generate_series(1, 120) AS n
 )
-INSERT INTO sales (product_id, quantity, amount, sale_date, region, salesperson)
+INSERT INTO products (sku, name, category, brand, price, launch_date, warranty, highlights)
 SELECT
-    s.product_id,
-    s.quantity,
-    p.price * s.quantity as amount,
-    s.sale_date,
-    s.region,
-    s.salesperson
-FROM sales_data s
-JOIN products p ON s.product_id = p.id
-WHERE NOT EXISTS (SELECT 1 FROM sales WHERE id = s.id);
+    CASE c.category
+        WHEN '手机' THEN '手机-' || lpad(s.n::text, 4, '0')
+        WHEN '笔记本' THEN '笔记-' || lpad(s.n::text, 4, '0')
+        WHEN '平板' THEN '平板-' || lpad(s.n::text, 4, '0')
+        WHEN '智能手表' THEN '智能-' || lpad(s.n::text, 4, '0')
+        WHEN '蓝牙耳机' THEN '蓝牙-' || lpad(s.n::text, 4, '0')
+        WHEN '电视' THEN '电视-' || lpad(s.n::text, 4, '0')
+        WHEN '空调' THEN '空调-' || lpad(s.n::text, 4, '0')
+        ELSE '冰箱-' || lpad(s.n::text, 4, '0')
+    END AS sku,
+    c.brand || c.category || ((s.n - 1) % 18 + 1)::text || '代' AS name,
+    c.category,
+    c.brand,
+    (c.min_price + ((s.n * 173) % (c.max_price - c.min_price + 1)))::numeric(10,2) AS price,
+    make_date(2023 + ((s.n - 1) % 3), ((s.n - 1) % 12) + 1, ((s.n - 1) % 27) + 1) AS launch_date,
+    '整机1年' AS warranty,
+    CASE c.category
+        WHEN '手机' THEN '影像稳定, 电池耐用, 信号稳定'
+        WHEN '笔记本' THEN '轻薄便携, 长续航, 高性能'
+        WHEN '平板' THEN '学习友好, 护眼屏, 影音体验好'
+        WHEN '智能手表' THEN '健康监测, 运动识别, 防水'
+        WHEN '蓝牙耳机' THEN '降噪清晰, 通话稳定, 佩戴舒适'
+        WHEN '电视' THEN '高亮度, 色彩准确, 系统流畅'
+        WHEN '空调' THEN '节能省电, 静音运行, 制冷快速'
+        ELSE '保鲜持久, 分区清晰, 低噪音'
+    END AS highlights
+FROM seq s
+JOIN cat_cfg c ON c.idx = ((s.n - 1) % 8) + 1;
 
--- 创建索引优化查询性能
+-- 插入360条销售（与实习知识源规模一致）
+WITH seq AS (
+    SELECT generate_series(1, 360) AS n
+),
+picked AS (
+    SELECT
+        s.n,
+        p.sku,
+        p.name AS product_name,
+        p.category,
+        p.price,
+        date '2024-01-01' + ((s.n - 1) % 60) AS sale_date,
+        (ARRAY['华东', '华北', '华南', '西部', '华中'])[ ((s.n - 1) % 5) + 1 ] AS region,
+        (ARRAY['线上', '线下'])[ ((s.n - 1) % 2) + 1 ] AS channel,
+        ((s.n * 7) % 76 + 5) AS quantity
+    FROM seq s
+    JOIN products p ON p.sku = (
+        SELECT sku FROM products ORDER BY sku LIMIT 1 OFFSET ((s.n - 1) % 120)
+    )
+)
+INSERT INTO sales (sale_date, sku, product_name, category, region, channel, quantity, amount)
+SELECT
+    sale_date,
+    sku,
+    product_name,
+    category,
+    region,
+    channel,
+    quantity,
+    (price * quantity)::numeric(14,2) AS amount
+FROM picked;
+
+-- 索引
 CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(sale_date);
 CREATE INDEX IF NOT EXISTS idx_sales_region ON sales(region);
-CREATE INDEX IF NOT EXISTS idx_sales_person ON sales(salesperson);
-CREATE INDEX IF NOT EXISTS idx_sales_product ON sales(product_id);
+CREATE INDEX IF NOT EXISTS idx_sales_channel ON sales(channel);
+CREATE INDEX IF NOT EXISTS idx_sales_sku ON sales(sku);
+CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
 
--- 验证数据
-SELECT '产品数量' as metric, COUNT(*) as value FROM products
+-- 验证
+SELECT '产品数量' AS metric, COUNT(*)::text AS value FROM products
 UNION ALL
-SELECT '销售记录数', COUNT(*) FROM sales
+SELECT '销售记录数', COUNT(*)::text FROM sales
 UNION ALL
-SELECT '总销售额', ROUND(SUM(amount)::numeric, 2) FROM sales
+SELECT '总销售额', ROUND(SUM(amount)::numeric, 2)::text FROM sales
 UNION ALL
-SELECT '销售员人数', COUNT(DISTINCT salesperson) FROM sales
+SELECT '覆盖品类数', COUNT(DISTINCT category)::text FROM products
 UNION ALL
-SELECT '覆盖地区数', COUNT(DISTINCT region) FROM sales;
+SELECT '覆盖地区数', COUNT(DISTINCT region)::text FROM sales;

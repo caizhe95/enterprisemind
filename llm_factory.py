@@ -1,8 +1,5 @@
 """LLM工厂 - 中文Embedding优化版"""
 
-from pathlib import Path
-import hashlib
-import math
 from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -43,7 +40,7 @@ class LLMFactory:
 
     @staticmethod
     def get_embedding_model() -> Embeddings:
-        """获取Embedding模型 - BGE中文优化版"""
+        """获取Embedding模型 - 失败即报错，不做降级"""
         from config import config
 
         if config.RUN_MODE == "cloud":
@@ -54,11 +51,21 @@ class LLMFactory:
                 base_url=config.OLLAMA_BASE_URL,
             )
 
-        # 本地：优先中文模型，失败时回退到本地已缓存模型
-        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        os.environ["HF_HUB_OFFLINE"] = "0"
+        # 本地：优先使用本地缓存模型，避免网络抖动导致初始化失败
+        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
         model_name = "BAAI/bge-small-zh-v1.5"
+        snapshot_root = "./models/models--BAAI--bge-small-zh-v1.5/snapshots"
+        if os.path.isdir(snapshot_root):
+            snapshot_dirs = [
+                os.path.join(snapshot_root, d)
+                for d in os.listdir(snapshot_root)
+                if os.path.isdir(os.path.join(snapshot_root, d))
+            ]
+            if snapshot_dirs:
+                model_name = snapshot_dirs[0]
         cache_dir = "./models"
         os.makedirs(cache_dir, exist_ok=True)
 
@@ -73,58 +80,10 @@ class LLMFactory:
                 multi_process=False,  # Windows兼容
             )
         except Exception as e:
-            print(f"[Embedding] 中文模型不可用，尝试本地回退: {e}")
-
-        local_snapshot = (
-            Path(cache_dir)
-            / "models"
-            / "models--sentence-transformers--all-MiniLM-L6-v2"
-            / "snapshots"
-        )
-        if local_snapshot.exists():
-            snapshots = sorted([p for p in local_snapshot.iterdir() if p.is_dir()])
-            if snapshots:
-                fallback_path = str(snapshots[0])
-                print(f"[Embedding] 使用本地回退模型: {fallback_path}")
-                return HuggingFaceEmbeddings(
-                    model_name=fallback_path,
-                    model_kwargs={"device": "cpu", "local_files_only": True},
-                    encode_kwargs={"normalize_embeddings": True},
-                    cache_folder=cache_dir,
-                    multi_process=False,
-                )
-
-        print("[Embedding] 未找到可用的本地回退模型")
-        print("[Embedding] 使用本地哈希回退向量")
-        return HashEmbeddings()
-
-
-class HashEmbeddings(Embeddings):
-    """纯本地回退向量，保证无外部依赖时系统仍可运行。"""
-
-    def __init__(self, dimension: int = 384):
-        self.dimension = dimension
-
-    def _embed(self, text: str) -> list[float]:
-        vector = [0.0] * self.dimension
-        tokens = text.lower().split()
-        if not tokens:
-            return vector
-
-        for token in tokens:
-            digest = hashlib.md5(token.encode("utf-8")).hexdigest()
-            index = int(digest[:8], 16) % self.dimension
-            sign = 1.0 if int(digest[8:10], 16) % 2 == 0 else -1.0
-            vector[index] += sign
-
-        norm = math.sqrt(sum(v * v for v in vector)) or 1.0
-        return [v / norm for v in vector]
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [self._embed(text) for text in texts]
-
-    def embed_query(self, text: str) -> list[float]:
-        return self._embed(text)
+            raise RuntimeError(
+                "[Embedding] 初始化失败: 无降级策略。"
+                "请检查网络/HF镜像可用性，或预先下载模型后重试。"
+            ) from e
 
 
 def get_llm() -> BaseChatModel:
