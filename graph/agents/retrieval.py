@@ -9,7 +9,29 @@ from graph.state import AgentState
 from logger import logger
 from config import config
 from graph.agents.worker_contract import build_worker_output
+from graph.agents.field_utils import extract_fields_by_text
+from graph.agents.section_utils import infer_section_targets, section_match_score
 from tools.rerank_tool import rerank_tool
+
+
+ENTITY_STOPWORDS = {
+    "价格",
+    "售价",
+    "多少钱",
+    "多少",
+    "品类",
+    "参数",
+    "配置",
+    "发布时间",
+    "上市时间",
+    "起售价",
+    "续航",
+    "电池",
+    "容量",
+    "对比",
+    "哪个更贵",
+    "哪个更便宜",
+}
 
 
 def _need_shopping_slot_confirm(state: AgentState) -> bool:
@@ -45,6 +67,85 @@ def _score_docs(docs: List[Dict]) -> float:
     return score
 
 
+def _extract_query_entity(query: str) -> str:
+    text = re.sub(r"[？?。！!]", "", query).strip()
+    for marker in [
+        "售价",
+        "价格",
+        "起售价",
+        "品类",
+        "参数",
+        "配置",
+        "发布时间",
+        "上市时间",
+        "续航",
+        "电池",
+        "容量",
+        "多少钱",
+        "是多少",
+        "是什么",
+    ]:
+        if marker in text:
+            text = text.split(marker)[0].strip()
+            break
+    text = re.sub(r"(现在|当前|目前|如今|现阶段)$", "", text).strip()
+    text = re.sub(r"(的|请问|帮我|查下|查一下)$", "", text).strip()
+    if text in ENTITY_STOPWORDS or len(text) < 2:
+        return ""
+    return text
+
+
+def _extract_generation_number(text: str) -> str | None:
+    match = re.search(r"(\d+)\s*代", text)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _prioritize_entity_precise_docs(state: AgentState, query: str, docs: List[Dict]) -> List[Dict]:
+    if not docs:
+        return docs
+
+    entity = _extract_query_entity(query)
+    question_type = state.get("question_type")
+    if not entity or question_type not in {"single_fact", "field_list", "comparison"}:
+        return docs
+
+    query_generation = _extract_generation_number(entity)
+
+    def sort_key(doc: Dict) -> tuple[float, float, float]:
+        meta = doc.get("metadata", {})
+        file_name = str(meta.get("file_name") or meta.get("source") or "").lower()
+        content = str(doc.get("content", ""))
+        base = (
+            float(meta.get("tool_rerank_score", 0) or 0)
+            + float(meta.get("rerank_score", 0) or 0)
+            + float(meta.get("rrf_score", 0) or 0)
+        )
+
+        exact_entity_bonus = 5.0 if entity and entity in content else 0.0
+        prefix_bonus = 2.5 if entity and content.startswith(f"## {entity}") else 0.0
+
+        source_bonus = 0.0
+        if "products.md" in file_name:
+            source_bonus += 2.5
+        elif "policies.md" in file_name:
+            source_bonus += 1.0
+        elif "sales.md" in file_name:
+            source_bonus -= 1.0
+
+        generation_penalty = 0.0
+        if query_generation:
+            content_generation = _extract_generation_number(content)
+            if content_generation and content_generation != query_generation:
+                generation_penalty = -4.0
+
+        return (exact_entity_bonus + prefix_bonus + source_bonus + generation_penalty, base, float(meta.get("search_latency_ms", 0) or 0) * -1)
+
+    ranked = sorted(docs, key=sort_key, reverse=True)
+    return ranked[:8]
+
+
 def _prioritize_recommendation_docs(query: str, docs: List[Dict]) -> List[Dict]:
     if not docs:
         return docs
@@ -65,6 +166,49 @@ def _prioritize_recommendation_docs(query: str, docs: List[Dict]) -> List[Dict]:
     ranked = sorted(docs, key=sort_key, reverse=True)
     return ranked[:8]
 
+
+def _section_queries_for_question(query: str) -> List[str]:
+    return infer_section_targets(query, extract_fields_by_text(query))
+
+
+def _merge_docs(primary: List[Dict], extra: List[Dict], top_k: int = 8) -> List[Dict]:
+    merged: List[Dict] = []
+    seen = set()
+    for doc in primary + extra:
+        meta = doc.get("metadata", {}) or {}
+        doc_id = str(meta.get("chunk_id") or hash(str(doc.get("content", ""))[:120]))
+        if doc_id in seen:
+            continue
+        seen.add(doc_id)
+        merged.append(doc)
+    return merged[:top_k]
+
+
+def _prioritize_section_docs(query: str, docs: List[Dict]) -> List[Dict]:
+    if not docs:
+        return docs
+    section_targets = _section_queries_for_question(query)
+    if not section_targets:
+        return docs
+
+    def sort_key(doc: Dict) -> tuple[float, float]:
+        meta = doc.get("metadata", {})
+        file_name = str(meta.get("file_name") or meta.get("source") or "").lower()
+        content = str(doc.get("content", ""))
+        section_bonus = section_match_score(section_targets, content, meta)
+        if "policies.md" in file_name:
+            section_bonus += 2.0
+        if "products.md" in file_name:
+            section_bonus += 1.5
+        base = (
+            float(meta.get("tool_rerank_score", 0) or 0)
+            + float(meta.get("rerank_score", 0) or 0)
+            + float(meta.get("rrf_score", 0) or 0)
+        )
+        return (section_bonus, base)
+
+    return sorted(docs, key=sort_key, reverse=True)[:8]
+
 def _react_retrieve(state: AgentState) -> dict:
     from rag.retrieval_engine import RetrievalEngine
 
@@ -81,16 +225,29 @@ def _react_retrieve(state: AgentState) -> dict:
             query = base_query
             thought = "先按用户原始问题进行混合检索，获取候选商品证据。"
         else:
-            query = _rewrite_query_for_react(base_query)
-            thought = "候选证据不足，补充导购导向重写查询再检索一次。"
+            if state.get("question_type") == "recommendation":
+                query = _rewrite_query_for_react(base_query)
+                thought = "候选证据不足，补充导购导向重写查询再检索一次。"
+            else:
+                query = base_query
+                thought = "候选证据不足，保持原问题做第二轮检索，避免导购化改写干扰单事实题。"
 
         docs = engine.hybrid_search(query, top_k=8)
+        extra_docs: List[Dict] = []
+        for section_query in _section_queries_for_question(base_query):
+            extra_docs.extend(engine.hybrid_search(section_query, top_k=4))
+        if extra_docs:
+            docs = _merge_docs(docs, extra_docs, top_k=12)
         docs = _prioritize_recommendation_docs(base_query, docs)
+        docs = _prioritize_entity_precise_docs(state, base_query, docs)
+        docs = _prioritize_section_docs(base_query, docs)
         used_rerank_tool = False
         if len(docs) > 3:
             reranked = rerank_tool.invoke({"query": base_query, "docs": docs, "top_k": 8})
             docs = reranked.get("docs", docs)
             used_rerank_tool = True
+        docs = _prioritize_entity_precise_docs(state, base_query, docs)
+        docs = _prioritize_section_docs(base_query, docs)
         current_score = _score_docs(docs)
         if current_score > best_score:
             best_score = current_score

@@ -6,8 +6,13 @@ import re
 from typing import Any, Dict, List
 
 from graph.state import AgentState
-from graph.agents.common import analyze_intent
-from graph.agents.field_utils import extract_fields_by_text
+from graph.agents.common import analyze_intent, should_fallback_to_search
+from graph.agents.field_utils import (
+    canonicalize_field_name,
+    extract_fields_by_text,
+    field_aliases_for,
+    get_metric_fields,
+)
 
 
 def _reset_execution_artifacts() -> Dict[str, Any]:
@@ -62,19 +67,14 @@ def _extract_comparison_entities(question: str) -> List[str]:
 
 def _infer_comparison_metric(question: str) -> str:
     text = question
-    metric_mapping = [
-        ("贵", "价格"),
-        ("便宜", "价格"),
-        ("价格", "价格"),
-        ("售价", "价格"),
-        ("续航", "续航"),
-        ("销量", "销量"),
-        ("销售额", "销售额"),
-        ("评分", "评分"),
-    ]
-    for keyword, metric in metric_mapping:
-        if keyword in text:
-            return metric
+    if any(keyword in text for keyword in ["贵", "便宜", "更高", "更低", "高于", "低于"]):
+        return "价格"
+    for metric in get_metric_fields():
+        for alias in field_aliases_for(metric):
+            if alias and alias in text:
+                return canonicalize_field_name(alias)
+    if "评分" in text:
+        return "评分"
     return "价格"
 
 
@@ -290,7 +290,13 @@ def replanner_node(state: AgentState) -> dict:
     reason = state.get("replan_reason") or "当前步骤未满足成功条件"
 
     if step.get("worker") == "retrieval_agent":
-        if attempts == 0:
+        if reason == "fallback_to_search_due_to_low_relevance_or_empty_extraction":
+            step["worker"] = "search_agent"
+            step["goal"] = f"{step.get('goal', '检索相关证据')}（切换外部搜索补证据）"
+            step["input"] = step.get("input") or question
+            step["expects"] = ["documents_found"]
+            decision = "retrieval_direct_fallback_to_search"
+        elif attempts == 0:
             step["input"] = f"{step.get('input') or question} {question}".strip()
             step["goal"] = f"{step.get('goal', '检索相关证据')}（扩展查询重试）"
             decision = "retrieval_step_retry_with_expanded_query"
@@ -333,6 +339,64 @@ def replanner_node(state: AgentState) -> dict:
                     }
                 ],
             }
+    elif step.get("worker") == "extraction_agent":
+        if reason == "fallback_to_search_due_to_low_relevance_or_empty_extraction":
+            plan[idx] = {
+                "worker": "search_agent",
+                "goal": "外部搜索补充事实证据",
+                "input": question,
+                "expects": ["documents_found"],
+            }
+            needs_followup_extraction = state.get("question_type") in {"single_fact", "field_list"}
+            next_worker = plan[idx + 1].get("worker") if idx + 1 < len(plan) else None
+            if needs_followup_extraction and next_worker != "extraction_agent":
+                plan[idx + 1 : idx + 1] = [
+                    {
+                        "worker": "extraction_agent",
+                        "goal": "从外部搜索结果抽取结构化证据",
+                        "input": question,
+                        "expects": ["structured_data_ready"],
+                    }
+                ]
+            elif idx + 1 >= len(plan):
+                plan.append({"worker": "response_agent", "goal": "生成最终回答"})
+            retry_counts[key] = attempts + 1
+            return {
+                "execution_plan": plan,
+                "step_retry_counts": retry_counts,
+                "replan_count": int(state.get("replan_count", 0) or 0) + 1,
+                "replan_reason": None,
+                "worker_input": None,
+                "last_worker_output": None,
+                "tool_results": [],
+                "tool_calls": [],
+                "next_step": "orchestrator",
+                "active_agent": "replanner",
+                "execution_trace": [
+                    {
+                        "node": "replanner",
+                        "decision": f"step={idx + 1} extraction_fallback_to_search | reason={reason}",
+                    }
+                ],
+                "agent_outputs": [
+                    {
+                        "agent": "replanner",
+                        "step_index": idx,
+                        "decision": "extraction_fallback_to_search",
+                        "retry_count": retry_counts[key],
+                    }
+                ],
+            }
+        return {
+            "next_step": "response_agent",
+            "active_agent": "replanner",
+            "execution_trace": [
+                {
+                    "node": "replanner",
+                    "decision": f"step={idx + 1} extraction_retry_not_supported，结束到response_agent | reason={reason}",
+                }
+            ],
+        }
     else:
         return {
             "next_step": "response_agent",
@@ -376,15 +440,15 @@ def replanner_node(state: AgentState) -> dict:
 
 
 def _extract_numeric_metric_value(docs: List[Dict[str, Any]], metric: str) -> int | None:
+    canonical_metric = canonicalize_field_name(metric)
+    aliases = field_aliases_for(canonical_metric) or [canonical_metric]
+    alias_pattern = "|".join(re.escape(alias) for alias in aliases if alias)
     for doc in docs:
         content = doc.get("content", "")
-        patterns = {
-            "价格": r"(?:价格|售价)\s*[:：]\s*(\d+)\s*元?",
-            "销量": r"销量\s*[:：]?\s*(\d+)",
-            "销售额": r"销售额\s*[:：]?\s*(\d+)",
-            "续航": r"续航\s*[:：]?\s*(\d+)",
-        }
-        pattern = patterns.get(metric, rf"{re.escape(metric)}\s*[:：]?\s*(\d+)")
+        if canonical_metric == "价格":
+            pattern = rf"(?:{alias_pattern})\s*[:：]?\s*(\d+)\s*元?"
+        else:
+            pattern = rf"(?:{alias_pattern})\s*[:：]?\s*(\d+)"
         match = re.search(pattern, content)
         if match:
             return int(match.group(1))
@@ -429,7 +493,15 @@ def _build_comparison_expression(state: AgentState) -> dict | None:
         value = _extract_value_from_worker_output(match_result, metric)
         if value is None:
             return None
-        compared.append({"entity": entity, "metric": metric, "value": value})
+        compared.append(
+            {
+                "entity": entity,
+                "metric": metric,
+                "value": value,
+                "unit": "元" if canonicalize_field_name(metric) == "价格" else None,
+                "worker_input": step.get("input"),
+            }
+        )
 
     left, right = compared
     if left["value"] >= right["value"]:
@@ -482,6 +554,32 @@ def judge_node(state: AgentState) -> dict:
     signals = set(last_output.get("signals") or [])
     expects = set(step.get("expects") or [])
     unmet_expects = sorted(expects - signals)
+    should_try_search_fallback = False
+
+    if step.get("worker") == "retrieval_agent":
+        docs = (last_output.get("artifacts") or {}).get("retrieved_docs") or state.get("retrieved_docs") or []
+        retrieval_grade = (last_output.get("artifacts") or {}).get("retrieval_grade")
+        should_try_search_fallback = bool(
+            should_fallback_to_search(state["question"], docs)
+            and (
+                not docs
+                or retrieval_grade == "irrelevant"
+                or (
+                    state.get("question_type") in {"single_fact", "field_list"}
+                    and retrieval_grade != "highly_relevant"
+                )
+            )
+        )
+    elif step.get("worker") == "extraction_agent":
+        artifacts = last_output.get("artifacts") or {}
+        has_structured = bool(
+            artifacts.get("fields") or artifacts.get("metrics") or artifacts.get("products")
+        )
+        docs = state.get("retrieved_docs") or []
+        should_try_search_fallback = bool(
+            not has_structured and should_fallback_to_search(state["question"], docs)
+        )
+
     if worker_status == "failed" or unmet_expects:
         updates["current_step_index"] = idx
         updates["next_step"] = "replanner"
@@ -492,6 +590,16 @@ def judge_node(state: AgentState) -> dict:
             {
                 "node": "judge",
                 "decision": f"step={idx + 1} worker={step.get('worker')} 未满足条件，进入replanner",
+            }
+        ]
+    elif should_try_search_fallback:
+        updates["current_step_index"] = idx
+        updates["next_step"] = "replanner"
+        updates["replan_reason"] = "fallback_to_search_due_to_low_relevance_or_empty_extraction"
+        updates["execution_trace"] = [
+            {
+                "node": "judge",
+                "decision": f"step={idx + 1} worker={step.get('worker')} 本地证据不足，切换外部搜索补证据",
             }
         ]
 

@@ -134,10 +134,142 @@ class RetrievalEngine:
     def _tokenize(self, text: str) -> List[str]:
         return re.findall(r"[\u4e00-\u9fff]|[a-zA-Z]+|\d+", text.lower())
 
+    @staticmethod
+    def _extract_query_entity(query: str) -> str:
+        text = re.sub(r"[？?。！!]", "", query).strip()
+        for marker in [
+            "售价",
+            "价格",
+            "起售价",
+            "品类",
+            "参数",
+            "配置",
+            "发布时间",
+            "上市时间",
+            "续航",
+            "电池",
+            "容量",
+            "多少钱",
+            "是多少",
+            "是什么",
+        ]:
+            if marker in text:
+                text = text.split(marker)[0].strip()
+                break
+        text = re.sub(r"(现在|当前|目前|如今|现阶段)$", "", text).strip()
+        text = re.sub(r"(请问|帮我|查下|查一下)$", "", text).strip()
+        text = re.sub(r"的+$", "", text).strip()
+        return text
+
+    @staticmethod
+    def _extract_generation(text: str) -> str | None:
+        match = re.search(r"(\d+)\s*代", text)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _entity_metadata_text(metadata: Dict) -> str:
+        parts = [
+            str(metadata.get("H1", "")),
+            str(metadata.get("H2", "")),
+            str(metadata.get("H3", "")),
+            str(metadata.get("header_path", "")),
+            str(metadata.get("source_name", "")),
+            str(metadata.get("file_name", "")),
+        ]
+        return " ".join(part for part in parts if part).strip()
+
+    def _exact_entity_recall(self, query: str, top_k: int = 8) -> List[Dict]:
+        entity = self._extract_query_entity(query)
+        if not entity or len(entity) < 2:
+            return []
+
+        query_generation = self._extract_generation(entity)
+        candidates: List[Dict] = []
+        seen_ids = set()
+
+        for doc in self.documents_cache:
+            content = str(doc.get("content", ""))
+            metadata = doc.get("metadata", {}) or {}
+            metadata_text = self._entity_metadata_text(metadata)
+            if entity not in content and entity not in metadata_text and f"## {entity}" not in content:
+                continue
+
+            content_generation = self._extract_generation(f"{metadata_text} {content}")
+            if query_generation and content_generation and content_generation != query_generation:
+                continue
+
+            chunk_id = str(doc.get("metadata", {}).get("chunk_id") or hash(content[:50]))
+            if chunk_id in seen_ids:
+                continue
+            seen_ids.add(chunk_id)
+
+            file_name = str(metadata.get("file_name", "")).lower()
+            source_bonus = 0.0
+            if "products.md" in file_name:
+                source_bonus = 3.0
+            elif "guides" in file_name:
+                source_bonus = 1.5
+            elif "sales.md" in file_name:
+                source_bonus = -1.0
+
+            exact_bonus = (
+                4.0
+                if f"## {entity}" in content or metadata.get("H2") == entity
+                else 2.5
+            )
+            candidates.append(
+                {
+                    "content": content,
+                    "metadata": {
+                        **metadata,
+                        "exact_match_score": exact_bonus + source_bonus,
+                        "retrieval_grade": None,
+                        "eval_reason": None,
+                    },
+                    "recall_source": "exact",
+                }
+            )
+
+        ranked = sorted(
+            candidates,
+            key=lambda item: float(item["metadata"].get("exact_match_score", 0)),
+            reverse=True,
+        )
+        return ranked[:top_k]
+
+    @staticmethod
+    def _doc_identity(doc: Dict) -> str:
+        metadata = doc.get("metadata", {}) or {}
+        chunk_id = metadata.get("chunk_id")
+        if chunk_id:
+            return str(chunk_id)
+        return str(hash(str(doc.get("content", ""))[:120]))
+
+    def _merge_exact_candidates(
+        self, exact_docs: List[Dict], docs: List[Dict], top_k: int
+    ) -> List[Dict]:
+        if not exact_docs:
+            return docs[:top_k]
+
+        merged: List[Dict] = []
+        seen = set()
+        for item in exact_docs + docs:
+            doc_id = self._doc_identity(item)
+            if doc_id in seen:
+                continue
+            seen.add(doc_id)
+            merged.append(item)
+        return merged[:top_k]
+
     def multi_recall(self, query: str, top_k: int = 15) -> Tuple[List[Dict], Dict]:
         """多路召回"""
         candidates: List[Dict] = []
         stats = {"vector": 0, "bm25": 0, "exact": 0}
+
+        exact_results = self._exact_entity_recall(query, top_k=min(top_k, 8))
+        if exact_results:
+            candidates.extend(exact_results)
+            stats["exact"] = len(exact_results)
 
         # 向量召回
         try:
@@ -301,6 +433,8 @@ class RetrievalEngine:
             enhanced_queries = [query]
             logger.info("[Search] 查询优化关闭: 使用原始查询")
 
+        exact_results = self._exact_entity_recall(query, top_k=max(3, top_k))
+
         # 2. 多路召回
         all_results = []
         for q in set(enhanced_queries):
@@ -309,9 +443,11 @@ class RetrievalEngine:
 
         # 3. RRF融合
         fused = self.reciprocal_rank_fusion(all_results, k=config.RRF_K, top_n=10)
+        fused = self._merge_exact_candidates(exact_results, fused, top_k=max(10, top_k))
 
         # 4. 精排
         final = self.rerank(query, fused, top_k=top_k)
+        final = self._merge_exact_candidates(exact_results, final, top_k=top_k)
 
         # 5. 添加元数据（包含Self-RAG字段）
         elapsed = (time.time() - start) * 1000

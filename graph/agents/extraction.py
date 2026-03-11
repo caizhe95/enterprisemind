@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from graph.state import AgentState
+from graph.agents.field_utils import canonicalize_field_name, get_metric_fields
 from graph.agents.worker_contract import build_worker_output
 from tools.field_normalizer import field_normalizer
 from tools.structured_extractor import structured_extractor
@@ -12,8 +13,28 @@ def _current_metric(state: AgentState) -> str | None:
     plan = state.get("execution_plan") or []
     idx = int(state.get("current_step_index", 0) or 0)
     if not plan or idx >= len(plan):
-        return None
-    return plan[idx].get("metric")
+        return _infer_metric_from_query(state.get("worker_input") or state["question"])
+    return plan[idx].get("metric") or _infer_metric_from_query(
+        state.get("worker_input") or state["question"]
+    )
+
+
+def _infer_metric_from_query(query: str) -> str | None:
+    text = (query or "").strip()
+    alias_map: dict[str, list[str]] = {}
+    for metric in get_metric_fields():
+        canonical = canonicalize_field_name(metric)
+        if not canonical:
+            continue
+        alias_map.setdefault(canonical, [])
+        if metric not in alias_map[canonical]:
+            alias_map[canonical].append(metric)
+
+    for canonical, aliases in alias_map.items():
+        for keyword in aliases:
+            if keyword and keyword in text:
+                return canonical
+    return None
 
 
 def extraction_agent_node(state: AgentState) -> dict:

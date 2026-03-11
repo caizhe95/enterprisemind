@@ -18,16 +18,27 @@ def catalog_filter(
     """Filter candidates by category, budget, preferences, and scenarios."""
 
     filtered = []
+    excluded = []
+    hard_budget_matches = []
     for product in products:
+        reasons: list[str] = []
         if category and product.get("category") != category:
-            continue
+            reasons.append("category_mismatch")
         price = product.get("price")
-        if budget is not None and price is not None and price > budget * 1.15:
+        if budget is not None and price is not None:
+            if price <= budget:
+                hard_budget_matches.append(product)
+            elif price > budget * 1.15:
+                reasons.append("over_budget")
+        if reasons:
+            excluded.append({"product": product, "reasons": reasons})
             continue
         filtered.append(product)
 
+    fallback_used = False
     if not filtered:
         filtered = list(products)
+        fallback_used = True
 
     preferred = []
     for product in filtered:
@@ -46,6 +57,15 @@ def catalog_filter(
 
     return {
         "products": ordered or filtered,
+        "hard_budget_products": [item for item in filtered if budget is None or item in hard_budget_matches],
+        "excluded_candidates": excluded,
+        "filter_summary": {
+            "input_count": len(products or []),
+            "filtered_count": len(filtered),
+            "excluded_count": len(excluded),
+            "fallback_used": fallback_used,
+            "has_hard_budget_match": bool(hard_budget_matches),
+        },
         "applied_filters": {
             "budget": budget,
             "category": category,

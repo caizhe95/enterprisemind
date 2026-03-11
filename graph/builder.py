@@ -27,24 +27,6 @@ from graph.agents.hitl import (
 from config import config
 
 
-def _ensure_lang_versions():
-    """确保 langchain / langgraph 主版本 >= 1"""
-
-    def _major(v: str) -> int:
-        part = v.split(".")[0]
-        digits = "".join(ch for ch in part if ch.isdigit())
-        return int(digits) if digits else 0
-
-    for pkg in ("langchain", "langgraph"):
-        try:
-            v = version(pkg)
-        except PackageNotFoundError as e:
-            raise RuntimeError(f"缺少依赖: {pkg}，请先安装 requirements.txt") from e
-
-        if _major(v) < 1:
-            raise RuntimeError(f"{pkg} 当前版本为 {v}，需要 >= 1.0.0")
-
-
 def _append_no_proxy(host: str):
     if not host:
         return
@@ -109,7 +91,6 @@ def setup_langsmith():
 
 def build_graph():
     """构建 Supervisor 多Agent + Self-RAG 图"""
-    _ensure_lang_versions()
     setup_langsmith()
 
     checkpointer = InMemorySaver()

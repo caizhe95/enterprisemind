@@ -138,6 +138,12 @@ def create_interface():
                     status_text = gr.Textbox(
                         label="执行状态", value="就绪", interactive=False, lines=2
                     )
+                    route_text = gr.Textbox(
+                        label="意图路由",
+                        value="等待路由...",
+                        interactive=False,
+                        lines=2,
+                    )
                     citation_md = gr.Markdown(label="引用溯源")
                     eval_json = gr.JSON(label="Self-RAG评估详情", visible=False)
 
@@ -205,6 +211,7 @@ def create_interface():
                 yield (
                     history,
                     "空输入",
+                    "等待路由...",
                     "",
                     "",
                     "",
@@ -220,6 +227,7 @@ def create_interface():
             yield (
                 history,
                 "🤔 正在分析意图...",
+                "正在识别问题类型...",
                 "初始化...",
                 "等待中...",
                 "",
@@ -257,6 +265,7 @@ def create_interface():
             retrieval_detail = "🔄 检索中..."
             gen_detail = "等待生成..."
             cite_md = ""
+            route_detail = "等待路由..."
 
             try:
                 for event in app.stream(payload, config_dict, stream_mode="values"):
@@ -276,6 +285,10 @@ def create_interface():
                                 }
                             )
                             status = "⏸️ 等待策略确认"
+                            analysis = pending.get("analysis", {})
+                            source = analysis.get("route_source", "rules")
+                            reason = analysis.get("reason", "待确认")
+                            route_detail = f"来源: {source} | {reason}"
                         else:
                             if pending_type == "shopping_slot_confirm":
                                 history.append(
@@ -303,6 +316,7 @@ def create_interface():
                         yield (
                             history,
                             status,
+                            route_detail,
                             retrieval_detail,
                             "等待用户决策...",
                             cite_md,
@@ -318,8 +332,24 @@ def create_interface():
                     reflection = state.get("reflection_count", 0)
                     eval_result = state.get("self_rag_eval", {})
                     citations = state.get("citations", [])
+                    agent_outputs = state.get("agent_outputs", []) or []
+                    supervisor_output = next(
+                        (
+                            item
+                            for item in reversed(agent_outputs)
+                            if item.get("agent") == "supervisor"
+                        ),
+                        None,
+                    )
 
                     status_parts = []
+                    if supervisor_output:
+                        route_source = supervisor_output.get("route_source", "rules")
+                        route_intent = supervisor_output.get("intent", "unknown")
+                        route_reason = supervisor_output.get("reason", "")
+                        route_detail = (
+                            f"策略: {route_intent} | 来源: {route_source} | {route_reason}"
+                        )
                     if grade:
                         grade_emoji = {
                             "highly_relevant": "✅",
@@ -381,7 +411,20 @@ def create_interface():
 
                     debug_info = {}
                     if show_debug:
+                        route_debug = {}
+                        if supervisor_output:
+                            route_debug = {
+                                "intent": supervisor_output.get("intent"),
+                                "route_source": supervisor_output.get("route_source"),
+                                "route_reason": supervisor_output.get("reason"),
+                                "route_confidence": supervisor_output.get("confidence"),
+                                "should_try_search": supervisor_output.get("should_try_search"),
+                                "should_try_retrieval": supervisor_output.get(
+                                    "should_try_retrieval"
+                                ),
+                            }
                         debug_info = {
+                            "routing": route_debug,
                             "retrieval_grade": grade,
                             "reflection_count": reflection,
                             "eval_result": eval_result,
@@ -395,6 +438,7 @@ def create_interface():
                     yield (
                         history,
                         current_status if show_reasoning else "思考中...",
+                        route_detail,
                         retrieval_detail,
                         gen_detail,
                         cite_md,
@@ -416,6 +460,7 @@ def create_interface():
                 yield (
                     history,
                     error_msg,
+                    "路由失败",
                     "错误",
                     "错误",
                     "",
@@ -442,6 +487,7 @@ def create_interface():
                 yield (
                     history,
                     "无待处理决策",
+                    "等待路由...",
                     "等待查询...",
                     "等待生成...",
                     "",
@@ -521,6 +567,7 @@ def create_interface():
             yield (
                 history,
                 "未知决策类型",
+                "等待路由...",
                 "等待查询...",
                 "等待生成...",
                 "",
@@ -566,6 +613,7 @@ def create_interface():
             [
                 chatbot,
                 status_text,
+                route_text,
                 retrieval_status,
                 gen_status,
                 citation_md,
@@ -591,6 +639,7 @@ def create_interface():
             [
                 chatbot,
                 status_text,
+                route_text,
                 retrieval_status,
                 gen_status,
                 citation_md,
@@ -618,6 +667,7 @@ def create_interface():
             [
                 chatbot,
                 status_text,
+                route_text,
                 retrieval_status,
                 gen_status,
                 citation_md,

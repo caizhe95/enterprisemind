@@ -5,17 +5,11 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from langchain_core.tools import tool
-
-
-FIELD_ALIASES = {
-    "售价": "价格",
-    "价钱": "价格",
-    "费用": "价格",
-}
+from graph.agents.field_utils import canonicalize_field_name
 
 
 def _canonical_field(name: str) -> str:
-    return FIELD_ALIASES.get(name, name)
+    return canonicalize_field_name(name)
 
 
 def _normalize_metric_value(field: str, payload: Any) -> dict[str, Any]:

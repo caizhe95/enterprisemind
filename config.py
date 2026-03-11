@@ -78,6 +78,9 @@ class Config:
     ENABLE_QUERY_OPTIMIZATION = (
         os.getenv("ENABLE_QUERY_OPTIMIZATION", "true").lower() == "true"
     )  # 查询优化开关
+    ENABLE_LLM_INTENT_ROUTING = (
+        os.getenv("ENABLE_LLM_INTENT_ROUTING", "true").lower() == "true"
+    )
     # 默认使用更适合中文场景的 reranker，可通过 .env 覆盖
     RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
     RRF_K = 60  # RRF融合参数

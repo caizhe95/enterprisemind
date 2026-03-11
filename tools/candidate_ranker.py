@@ -18,6 +18,9 @@ def _score_product(
     reasons: list[str] = []
     price = product.get("price")
     highlights = product.get("highlights") or []
+    matched_preferences: list[str] = []
+    matched_scenarios: list[str] = []
+    budget_status = "unknown"
 
     if category and product.get("category") == category:
         score += 3.0
@@ -27,16 +30,22 @@ def _score_product(
         if price <= budget:
             score += 3.0
             reasons.append("价格在预算内")
+            budget_status = "within_budget"
         elif price <= budget * 1.15:
             score += 1.0
             reasons.append("价格接近预算")
+            budget_status = "near_budget"
         else:
             score -= 2.0
+            budget_status = "over_budget"
+    elif price is not None:
+        budget_status = "budget_not_provided"
 
     for pref in preferences:
         if any(pref in item for item in highlights):
             score += 1.5
             reasons.append(f"{pref}表现更匹配")
+            matched_preferences.append(pref)
 
     if "性价比" in preferences and price is not None and budget is not None and price <= budget:
         score += 1.0
@@ -54,6 +63,7 @@ def _score_product(
             if any(highlight in item for item in highlights):
                 score += bonus
                 reasons.append(f"更适合{scenario}")
+                matched_scenarios.append(scenario)
 
     return {
         "name": product["name"],
@@ -62,6 +72,9 @@ def _score_product(
         "highlights": highlights,
         "score": round(score, 2),
         "reasons": list(dict.fromkeys(reasons))[:3],
+        "budget_status": budget_status,
+        "matched_preferences": list(dict.fromkeys(matched_preferences)),
+        "matched_scenarios": list(dict.fromkeys(matched_scenarios)),
     }
 
 
@@ -86,5 +99,13 @@ def candidate_ranker(
         for product in products or []
     ]
     ranked = [item for item in ranked if item["score"] > 0]
-    ranked.sort(key=lambda item: (item["score"], -(item.get("price") or 10**9)), reverse=True)
+    budget_priority = {"within_budget": 2, "near_budget": 1, "budget_not_provided": 1, "unknown": 1, "over_budget": 0}
+    ranked.sort(
+        key=lambda item: (
+            budget_priority.get(item.get("budget_status", "unknown"), 0),
+            item["score"],
+            -(item.get("price") or 10**9),
+        ),
+        reverse=True,
+    )
     return {"ranked_products": ranked}

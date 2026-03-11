@@ -14,7 +14,13 @@ def _rerank_score(query: str, doc: dict[str, Any]) -> float:
     query_terms = [term for term in query.replace("，", " ").replace(",", " ").split() if term]
     lexical_bonus = sum(1.0 for term in query_terms if term and term in content)
     file_name = str(meta.get("file_name") or meta.get("source") or "").lower()
-    guide_bonus = 1.5 if ("guides" in file_name or "shopping_guide" in file_name) else 0.0
+    recommendation_signals = ["推荐", "买哪个", "怎么选", "适合", "预算", "对比"]
+    guide_bonus = (
+        1.5
+        if ("guides" in file_name or "shopping_guide" in file_name)
+        and any(signal in query for signal in recommendation_signals)
+        else 0.0
+    )
     return base + lexical_bonus + guide_bonus
 
 

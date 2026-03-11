@@ -36,6 +36,14 @@ def supervisor_node(state: AgentState) -> dict:
         }
     else:
         routing = analyze_intent(question)
+        if routing.get("auto_route_to_search_on_dual") and routing.get("should_try_search"):
+            routing = {
+                **routing,
+                "intent": "search",
+                "reason": f"{routing['reason']}；公开商品事实题自动外部搜索",
+                "confidence": "high",
+                "should_try_retrieval": False,
+            }
         if _should_confirm_ambiguity(routing):
             recommended = (
                 "search"

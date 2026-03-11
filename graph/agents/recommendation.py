@@ -122,13 +122,15 @@ def recommendation_agent_node(state: AgentState) -> dict:
         }
     )
     filtered_products = filtered_payload.get("products", [])
+    hard_budget_products = filtered_payload.get("hard_budget_products", [])
     tool_results = [{"tool": "catalog_filter", "result": filtered_payload}]
 
     ranked = []
-    if filtered_products:
+    ranking_pool = hard_budget_products or filtered_products
+    if ranking_pool:
         ranked_payload = candidate_ranker.invoke(
             {
-                "products": filtered_products,
+                "products": ranking_pool,
                 "budget": budget,
                 "category": category,
                 "preferences": preferences,
@@ -138,6 +140,13 @@ def recommendation_agent_node(state: AgentState) -> dict:
         ranked = ranked_payload.get("ranked_products", [])
         tool_results.append({"tool": "candidate_ranker", "result": ranked_payload})
     top_candidates = ranked[:2]
+    gaps = []
+    if budget is not None and not hard_budget_products:
+        gaps.append("没有严格预算内候选，已放宽到接近预算范围")
+    if category and not any((item.get("category") == category) for item in products):
+        gaps.append(f"未找到品类为{category}的候选")
+    if preferences and not any(item.get("matched_preferences") for item in ranked):
+        gaps.append("候选中未明显命中偏好亮点")
 
     status = "success" if top_candidates else "partial"
     normalized_output = build_worker_output(
@@ -147,12 +156,19 @@ def recommendation_agent_node(state: AgentState) -> dict:
         artifacts={
             "recommendations": top_candidates,
             "filtered_candidates": filtered_products,
+            "excluded_candidates": filtered_payload.get("excluded_candidates", []),
             "decision_basis": {
                 "budget": budget,
                 "category": category,
                 "preferences": preferences,
                 "scenarios": scenarios,
             },
+            "selection_summary": {
+                **(filtered_payload.get("filter_summary") or {}),
+                "ranking_pool_count": len(ranking_pool),
+                "recommendation_count": len(top_candidates),
+            },
+            "coverage_gaps": gaps,
             "tool_results": [
                 *tool_results
             ],

@@ -16,9 +16,12 @@ from graph.agents.common import (
     extract_citations,
 )
 from graph.agents.field_utils import (
+    canonicalize_field_name,
     extract_fields_by_text,
+    field_aliases_for,
     has_explicit_field_list_signal,
     is_placeholder_field,
+    normalize_candidate_field,
 )
 
 
@@ -82,14 +85,13 @@ def _extract_target_fields(question: str, llm) -> list[str]:
             break
     parts = re.split(r"[、,，/]|以及|和|及|与", fallback)
     parts = [p.strip() for p in parts if p.strip()]
-    # 去掉明显实体前缀（例如“智能手表Pro上市时间” -> “上市时间”）
-    reduced = []
+    reduced: list[str] = []
     for p in parts:
-        m = re.search(
-            r"(时间|日期|品类|价格|售价|费用|续航|电池|容量|参数|规格|型号|版本|颜色|重量|尺寸|分辨率|屏幕|性能|功能|防水)$",
-            p,
-        )
-        reduced.append(m.group(1) if m else p[-8:])
+        normalized = normalize_candidate_field(p)
+        if normalized:
+            reduced.append(normalized)
+            continue
+        reduced.append(canonicalize_field_name(p[-8:]))
     reduced = list(dict.fromkeys([x for x in reduced if x]))
     reduced = [x for x in reduced if not is_placeholder_field(x)]
     return reduced[:8] if len(reduced) >= 2 else []
@@ -219,7 +221,7 @@ def _select_docs_for_fields(
 def _format_metric_value(metric: str, value: object) -> str:
     if value is None:
         return "根据现有资料无法确定"
-    if metric in {"价格", "售价", "费用"}:
+    if canonicalize_field_name(metric) == "价格":
         return f"{value}元"
     return str(value)
 
@@ -258,6 +260,15 @@ def _build_structured_comparison_answer(state: AgentState) -> str | None:
     if difference is None:
         return None
 
+    ordered_values = sorted(values, key=lambda item: item.get("value", 0), reverse=True)
+    leader = ordered_values[0]
+    trailer = ordered_values[1] if len(ordered_values) > 1 else None
+    metric_label = canonicalize_field_name(metric)
+    if metric_label == "价格" and trailer:
+        return (
+            f"{winner}更贵，{leader['entity']}价格为{leader['value']}元，"
+            f"{trailer['entity']}价格为{trailer['value']}元，贵{difference}元。"
+        )
     if metric == "价格":
         return f"{winner}更贵，贵{difference}元。"
     return f"{winner}的{metric}更高，相差{difference}。"
@@ -332,6 +343,9 @@ def _try_build_structured_answer(state: AgentState) -> str | None:
             if top.get("price") is not None:
                 answer += f"，价格约{top['price']}元"
             answer += f"，原因是{reasons}"
+            coverage_gaps = context.get("coverage_gaps") or []
+            if coverage_gaps:
+                answer += f"；注意：{coverage_gaps[0]}"
             if len(recommendations) > 1:
                 backup = recommendations[1]
                 answer += f"；备选可以看{backup['name']}"

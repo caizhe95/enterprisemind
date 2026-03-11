@@ -1,3 +1,6 @@
+from graph.agents.common import analyze_intent
+from graph.agents import common as common_module
+from graph.agents.supervisor import supervisor_node
 from graph.agents.planner import judge_node, planner_node, replanner_node
 from graph.state_helpers import build_initial_state
 
@@ -217,3 +220,120 @@ def test_replanner_clears_tool_artifacts_before_retry():
 
     assert replanned["tool_results"] == []
     assert replanned["tool_calls"] == []
+
+
+def test_open_domain_product_fact_query_allows_search_fallback():
+    analysis = analyze_intent("iPhone 15 的起售价是多少？")
+
+    assert analysis["intent"] == "retrieval"
+    assert analysis["should_try_search"] is True
+    assert analysis["auto_route_to_search_on_dual"] is True
+
+
+def test_internal_catalog_product_fact_stays_on_local_retrieval():
+    analysis = analyze_intent("星澜手机1代的价格")
+
+    assert analysis["intent"] == "retrieval"
+    assert analysis["should_try_search"] is False
+    assert analysis["auto_route_to_search_on_dual"] is False
+
+
+def test_supervisor_auto_routes_open_domain_product_fact_to_search_without_hitl():
+    state = build_initial_state("iPhone 15 的起售价是多少？", "sess_test", "user_test")
+
+    routed = supervisor_node(state)
+
+    assert routed["next_step"] == "planner"
+    assert routed["agent_outputs"][0]["intent"] == "search"
+
+
+def test_judge_sends_low_relevance_open_domain_retrieval_to_replanner():
+    state = build_initial_state("iPhone 15 的起售价是多少？", "sess_test", "user_test")
+    planned = planner_node(state)
+
+    judged = judge_node(
+        {
+            **state,
+            **planned,
+            "current_step_index": 0,
+            "worker_input": planned["execution_plan"][0]["input"],
+            "last_worker_output": {
+                "worker": "retrieval_agent",
+                "status": "success",
+                "summary": "检索完成",
+                "artifacts": {
+                    "retrieved_docs": [{"content": "云途手机15代 价格: 2999元", "metadata": {}}],
+                    "retrieval_grade": "partially_relevant",
+                },
+                "signals": ["documents_found"],
+                "confidence": 0.6,
+                "errors": [],
+            },
+            "step_results": [],
+        }
+    )
+
+    assert judged["next_step"] == "replanner"
+    assert judged["replan_reason"] == "fallback_to_search_due_to_low_relevance_or_empty_extraction"
+
+
+def test_replanner_switches_extraction_step_to_search_for_open_domain_fact():
+    state = build_initial_state("iPhone 15 的起售价是多少？", "sess_test", "user_test")
+    planned = planner_node(state)
+
+    replanned = replanner_node(
+        {
+            **state,
+            **planned,
+            "current_step_index": 1,
+            "replan_reason": "fallback_to_search_due_to_low_relevance_or_empty_extraction",
+            "step_retry_counts": {},
+        }
+    )
+
+    assert replanned["execution_plan"][1]["worker"] == "search_agent"
+    assert replanned["execution_plan"][2]["worker"] == "extraction_agent"
+
+
+def test_low_confidence_rule_route_can_be_refined_by_llm(monkeypatch):
+    monkeypatch.setattr(common_module.config, "ENABLE_LLM_INTENT_ROUTING", True)
+    monkeypatch.setattr(
+        common_module,
+        "_analyze_intent_with_llm",
+        lambda question, rule_analysis: {
+            "intent": "search",
+            "reason": "LLM判断为公开概念问答",
+            "confidence": "high",
+            "should_try_search": True,
+            "should_try_retrieval": False,
+            "auto_route_to_search_on_dual": False,
+            "route_source": "llm",
+        },
+    )
+
+    analysis = analyze_intent("MCP 协议怎么理解")
+
+    assert analysis["intent"] == "search"
+    assert analysis["route_source"] == "llm"
+
+
+def test_high_confidence_internal_attribute_query_stays_rule_routed(monkeypatch):
+    monkeypatch.setattr(common_module.config, "ENABLE_LLM_INTENT_ROUTING", True)
+    monkeypatch.setattr(
+        common_module,
+        "_analyze_intent_with_llm",
+        lambda question, rule_analysis: {
+            "intent": "search",
+            "reason": "误判到公网",
+            "confidence": "high",
+            "should_try_search": True,
+            "should_try_retrieval": False,
+            "auto_route_to_search_on_dual": False,
+            "route_source": "llm",
+        },
+    )
+
+    analysis = analyze_intent("星澜手机1代的价格是多少")
+
+    assert analysis["intent"] == "retrieval"
+    assert analysis["route_source"] == "rules"

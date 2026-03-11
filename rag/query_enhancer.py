@@ -5,6 +5,8 @@ import time
 from typing import List, Dict
 from llm_factory import get_llm
 from logger import logger
+from graph.agents.field_utils import get_query_synonym_groups
+from graph.agents.section_utils import get_section_synonym_groups
 
 
 class SmartQueryEnhancer:
@@ -19,25 +21,18 @@ class SmartQueryEnhancer:
         self.no_decompose_tag = "__NODECOMP__"
         self.decompose_cache_ttl = 1800  # 30分钟
         self.decompose_cache: Dict[str, Dict] = {}
-        # 企业场景同义词库（可扩展为配置文件加载）
-        self.synonyms = {
-            "销售额": ["营收", "收入", "销售金额", "营业额"],
-            "产品": ["商品", "货物", "SKU", "型号", "Item"],
-            "客户": ["用户", "顾客", "购买者", "消费者", "买家"],
-            "价格": ["单价", "售价", "定价", "多少钱", "费用"],
-            "库存": ["存货", "仓储", "备货量", "存储量"],
-            "优惠": ["折扣", "促销", "活动价", "减免", "让利"],
-            "排名": ["排序", "前几名", "Top", "最佳", "最受欢迎"],
-            "保修": ["质保", "维修", "售后保障", "保修政策"],
-            "发票": ["电子发票", "纸质发票", "开票", "发票抬头"],
-            "配送": ["发货", "物流", "到货", "配送时效"],
-            "会员": ["会员等级", "会员权益", "折扣等级", "会员规则"],
-            "渠道": ["线上", "线下", "销售渠道", "购买渠道"],
-            "销量": ["销售量", "卖出数量", "出货量", "成交量"],
-            "退换货": ["退货", "换货", "售后政策", "退换政策"],
-            "价保": ["价格保护", "保价", "补差", "价保政策"],
-            "活动": ["促销活动", "优惠活动", "限时活动", "大促"],
-        }
+        self.synonyms = self._load_synonyms()
+
+    @staticmethod
+    def _load_synonyms() -> Dict[str, List[str]]:
+        groups = list(get_query_synonym_groups()) + list(get_section_synonym_groups())
+        synonym_map: Dict[str, List[str]] = {}
+        for group in groups:
+            canonical = str(group[0]).strip()
+            variants = [str(item).strip() for item in group[1:] if str(item).strip()]
+            if canonical:
+                synonym_map[canonical] = variants
+        return synonym_map
 
     def analyze_query(self, query: str) -> Dict[str, bool]:
         """
