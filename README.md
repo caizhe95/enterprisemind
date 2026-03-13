@@ -79,6 +79,7 @@ pip install -r requirements.txt
 
 - `RUN_MODE`
 - `DATABASE_URL`
+- `POSTGRES_PASSWORD`
 - 当前运行模式所需的模型参数
 
 可选配置：
@@ -94,6 +95,8 @@ pip install -r requirements.txt
 ```bash
 psql -U postgres -d enterprisemind -f init_db.sql
 ```
+
+如果你直接使用示例配置，先把 `.env` 里的 `change_me` 替换成实际口令。
 
 ### 4. 启动 API 服务
 
@@ -118,7 +121,7 @@ python app.py
 ## Docker
 
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
 
 默认会启动：
@@ -148,7 +151,7 @@ REDIS_URL=redis://localhost:6379/0
 运行最小回归测试集：
 
 ```bash
-python -m pytest tests\test_async_io_paths.py tests\test_api_endpoints.py tests\test_planner_workflow.py tests\test_response_fields.py tests\test_cache_manager.py tests\test_memory_manager.py -q
+python -m pytest tests/test_async_io_paths.py tests/test_api_endpoints.py tests/test_planner_workflow.py tests/test_response_fields.py tests/test_cache_manager.py tests/test_memory_manager.py -q
 ```
 
 ## Benchmark

@@ -18,8 +18,11 @@ htmlcov/
 .tmp/
 tmp*/
 pytest-cache-files-*/
+pytest-cache-files*/
 *.tmp
 *.temp
+*.bak
+*.orig
 Thumbs.db
 .DS_Store
 
@@ -32,6 +35,7 @@ chroma_db/
 models/
 *.sqlite
 *.sqlite3
+*.sqlite-journal
 *.db-journal
 *.db-wal
 *.db-shm
@@ -48,3 +52,10 @@ dist/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Private interview materials
+INTERVIEW_*.md
+
+# Local scratch files
+demo_questions.md
+*.local.md

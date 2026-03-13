@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-123456}@db:5432/enterprisemind
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-change_me}@db:5432/enterprisemind
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
@@ -57,7 +57,7 @@ services:
     image: postgres:15-alpine
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-123456}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_me}
       - POSTGRES_DB=enterprisemind
     volumes:
       - postgres_data:/var/lib/postgresql/data

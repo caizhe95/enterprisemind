@@ -30,7 +30,7 @@ class Config:
 
     # ========== 3. 数据存储（.env已定义） ==========
     DATABASE_URL = os.getenv(
-        "DATABASE_URL", "postgresql://postgres:123456@localhost:5432/enterprisemind"
+        "DATABASE_URL", "postgresql://postgres:change_me@localhost:5432/enterprisemind"
     )
     CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
     PERSISTENT_CACHE_BACKEND = os.getenv(
@@ -66,8 +66,8 @@ class Config:
     )
 
     # ========== 5. 服务配置（.env已定义） ==========
-    HOST = os.getenv("HOST", "127.0.0.1")
-    PORT = int(os.getenv("PORT", "7860"))
+    HOST = os.getenv("HOST", "0.0.0.0")
+    PORT = int(os.getenv("PORT", "8000"))
     DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
     # ========== 6. HITL交互阈值 ==========
@@ -138,7 +138,8 @@ def check_environment():
     print(f"数据库: {config.DATABASE_URL.split('@')[-1]}")  # 隐藏密码
     print(f"业务缓存: {config.PERSISTENT_CACHE_BACKEND}")
     print(f"LLM缓存: {config.LLM_CACHE_BACKEND}")
-    print(f"服务: http://{config.HOST}:{config.PORT}")
+    print(f"默认服务配置: http://{config.HOST}:{config.PORT}")
+    print("FastAPI 实际监听地址以 Uvicorn 日志中的 'running on' 为准")
     print(f"调试模式: {'开启' if config.DEBUG else '关闭'}")
     print(f"Self-RAG: {'开启' if config.ENABLE_SELF_RAG else '关闭'}")
     print(f"Self-RAG Guard: {'开启' if config.ENABLE_SELF_RAG_GUARD else '关闭'}")
