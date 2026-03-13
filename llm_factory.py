@@ -7,6 +7,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
 import os
 
+from cache.langchain_cache import initialize_llm_cache
+
 
 class LLMFactory:
     """根据配置自动选择LLM和Embedding"""
@@ -15,6 +17,8 @@ class LLMFactory:
     def get_chat_model() -> BaseChatModel:
         """获取聊天模型"""
         from config import config
+
+        initialize_llm_cache()
 
         if config.RUN_MODE == "cloud":
             print(f"[LLM] 使用Ollama: {config.OLLAMA_MODEL}")

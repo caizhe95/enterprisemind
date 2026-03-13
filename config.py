@@ -33,6 +33,22 @@ class Config:
         "DATABASE_URL", "postgresql://postgres:123456@localhost:5432/enterprisemind"
     )
     CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
+    PERSISTENT_CACHE_BACKEND = os.getenv(
+        "PERSISTENT_CACHE_BACKEND", "sqlite"
+    ).strip().lower()
+    PERSISTENT_CACHE_DB_PATH = os.getenv(
+        "PERSISTENT_CACHE_DB_PATH", "./cache/persistent_cache.db"
+    )
+    PERSISTENT_CACHE_TTL_SECONDS = int(
+        os.getenv("PERSISTENT_CACHE_TTL_SECONDS", "3600")
+    )
+    PERSISTENT_CACHE_REDIS_PREFIX = os.getenv(
+        "PERSISTENT_CACHE_REDIS_PREFIX", "persistent_cache:"
+    )
+    LLM_CACHE_BACKEND = os.getenv("LLM_CACHE_BACKEND", "none").strip().lower()
+    LLM_CACHE_TTL_SECONDS = int(os.getenv("LLM_CACHE_TTL_SECONDS", "3600"))
+    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    LLM_CACHE_FAIL_OPEN = os.getenv("LLM_CACHE_FAIL_OPEN", "true").lower() == "true"
 
     # ========== 4. 可选功能 ==========
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
@@ -120,6 +136,8 @@ def check_environment():
 
     print(f"向量库: {config.CHROMA_PERSIST_DIR}")
     print(f"数据库: {config.DATABASE_URL.split('@')[-1]}")  # 隐藏密码
+    print(f"业务缓存: {config.PERSISTENT_CACHE_BACKEND}")
+    print(f"LLM缓存: {config.LLM_CACHE_BACKEND}")
     print(f"服务: http://{config.HOST}:{config.PORT}")
     print(f"调试模式: {'开启' if config.DEBUG else '关闭'}")
     print(f"Self-RAG: {'开启' if config.ENABLE_SELF_RAG else '关闭'}")

@@ -1,7 +1,16 @@
 """SQL相关节点"""
 
+import asyncio
+
 from graph.state import AgentState
-from tools.postgres_sql_tool import sql_query, sql_explain, generate_sql_with_examples
+from tools.postgres_sql_tool import (
+    generate_sql_with_examples,
+    generate_sql_with_examples_async,
+    sql_explain,
+    sql_explain_async,
+    sql_query,
+    sql_query_async,
+)
 from tools.sql_guard import sql_guard
 from cache.cache_manager import cache_manager
 from graph.agents.worker_contract import build_worker_output
@@ -57,12 +66,18 @@ def sql_explain_only_node(state: AgentState) -> dict:
     }
 
 
-def sql_agent_node(state: AgentState) -> dict:
-    """SQL Agent：端到端处理 SQL 生成、安全检查、执行/解释"""
-    generated = sql_generate_node(state)
-    if generated.get("next_step") == "end":
+async def _sql_agent_async(state: AgentState) -> dict:
+    worker_input = state.get("worker_input") or state["question"]
+    try:
+        try:
+            sql = await generate_sql_with_examples_async(worker_input)
+        except Exception:
+            sql = generate_sql_cached(worker_input)
+        generated = {"generated_sql": sql, "next_step": "sql_check"}
+    except Exception as e:
         return {
-            **generated,
+            "final_answer": f"SQL生成失败: {e}",
+            "next_step": "end",
             "active_agent": "sql_agent",
             "agent_outputs": [{"agent": "sql_agent", "status": "sql_generate_failed"}],
         }
@@ -71,25 +86,39 @@ def sql_agent_node(state: AgentState) -> dict:
     checked = sql_safety_check_node(merged_state)
 
     if checked.get("next_step") == "sql_explain_only":
-        explained = sql_explain_only_node(merged_state)
+        try:
+            explained_sql = await sql_explain_async(worker_input)
+        except Exception:
+            explained_sql = sql_explain.invoke({"question": worker_input})
         return {
             **generated,
             **checked,
-            **explained,
+            "final_answer": f"生成的SQL（未执行）：\n```sql\n{explained_sql}\n```",
+            "next_step": "end",
             "active_agent": "sql_agent",
             "agent_outputs": [{"agent": "sql_agent", "status": "sql_explain_only"}],
         }
 
-    if checked.get("next_step") == "end":
-        return {
-            **generated,
-            **checked,
-            "active_agent": "sql_agent",
-            "agent_outputs": [{"agent": "sql_agent", "status": "cancelled"}],
+    try:
+        executed = {
+            "sql_result": await sql_query_async(worker_input),
+            "next_step": "response_agent",
+        }
+    except Exception:
+        result = sql_query.invoke({"question": worker_input})
+        executed = {
+            "sql_result": result,
+            "tool_results": [{"tool": "sql_query", "result": result}],
+            "next_step": "response_agent",
         }
 
-    executed = sql_execute_node({**merged_state, **checked})
-    combined_tool_results = [*(checked.get("tool_results") or []), *(executed.get("tool_results") or [])]
+    combined_tool_results = [
+        *(checked.get("tool_results") or []),
+        {
+            "tool": "sql_query_async",
+            "result": executed.get("sql_result"),
+        },
+    ]
     next_step = "judge" if state.get("execution_plan") else "response_agent"
     normalized_output = build_worker_output(
         worker="sql_agent",
@@ -115,3 +144,8 @@ def sql_agent_node(state: AgentState) -> dict:
             {"agent": "sql_agent", "has_sql_result": bool(executed.get("sql_result"))}
         ],
     }
+
+
+def sql_agent_node(state: AgentState) -> dict:
+    """SQL Agent：端到端处理 SQL 生成、安全检查、执行/解释"""
+    return asyncio.run(_sql_agent_async(state))

@@ -1,11 +1,16 @@
-"""Tavily搜索"""
+"""Tavily搜索。"""
 
-from typing import Annotated
+from __future__ import annotations
+
+import os
+from typing import Annotated, Any
+
+import httpx
 from langchain_core.tools import tool
 from tavily import TavilyClient
-import os
 
 _tavily_client = None
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
 
 def get_client():
@@ -16,6 +21,32 @@ def get_client():
             raise ValueError("TAVILY_API_KEY not set")
         _tavily_client = TavilyClient(api_key=api_key)
     return _tavily_client
+
+
+async def tavily_search_async(
+    query: str,
+    search_depth: str = "basic",
+    max_results: int = 5,
+) -> dict[str, Any]:
+    """Async Tavily search using direct HTTP call for non-blocking I/O."""
+
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        raise ValueError("TAVILY_API_KEY not set")
+
+    payload = {
+        "api_key": api_key,
+        "query": query,
+        "search_depth": search_depth,
+        "max_results": max_results,
+        "include_answer": True,
+        "include_raw_content": True,
+    }
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.post(TAVILY_SEARCH_URL, json=payload)
+        response.raise_for_status()
+        return response.json()
 
 
 @tool

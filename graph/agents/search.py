@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from graph.state import AgentState
-from tools.tavily_tool import tavily_search
+from tools.tavily_tool import tavily_search, tavily_search_async
 
 from graph.agents.common import get_self_rag_evaluator
 from graph.agents.worker_contract import build_worker_output
@@ -46,19 +47,34 @@ def _normalize_tavily_docs(result: Any) -> list[dict]:
     return docs
 
 
-def search_node(state: AgentState) -> dict:
+def _dedupe_docs(docs: list[dict]) -> list[dict]:
+    merged = []
+    seen = set()
+    for doc in docs:
+        key = (
+            doc.get("metadata", {}).get("source"),
+            doc.get("metadata", {}).get("title"),
+            doc.get("content"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(doc)
+    return merged
+
+
+async def _search_node_async(state: AgentState) -> dict:
     try:
-        result = tavily_search.invoke(
-            {
-                "query": state.get("worker_input") or state["question"],
-                "search_depth": "basic",
-                "max_results": 5,
-            }
+        query = state.get("worker_input") or state["question"]
+        basic_result, advanced_result = await asyncio.gather(
+            tavily_search_async(query=query, search_depth="basic", max_results=5),
+            tavily_search_async(query=query, search_depth="advanced", max_results=5),
         )
 
-        docs = _normalize_tavily_docs(result)
+        docs = _dedupe_docs(
+            _normalize_tavily_docs(basic_result) + _normalize_tavily_docs(advanced_result)
+        )
         eval_result = None
-
         if docs:
             eval_result = get_self_rag_evaluator().evaluate_retrieval(
                 state["question"], docs
@@ -69,11 +85,39 @@ def search_node(state: AgentState) -> dict:
 
         return {
             "retrieved_docs": eval_result["details"],
-            "tool_results": [{"tool": "tavily_search", "result": result}],
+            "tool_results": [
+                {
+                    "tool": "tavily_search",
+                    "result": {
+                        "basic": basic_result,
+                        "advanced": advanced_result,
+                    },
+                }
+            ],
             "next_step": "response_agent",
         }
-    except Exception as e:
-        return {"observation": f"搜索失败: {e}", "next_step": "response_agent"}
+    except Exception:
+        # Fallback to sync tool to preserve compatibility in restricted envs.
+        try:
+            result = tavily_search.invoke(
+                {
+                    "query": state.get("worker_input") or state["question"],
+                    "search_depth": "basic",
+                    "max_results": 5,
+                }
+            )
+            docs = _normalize_tavily_docs(result)
+            return {
+                "retrieved_docs": docs,
+                "tool_results": [{"tool": "tavily_search", "result": result}],
+                "next_step": "response_agent",
+            }
+        except Exception as exc:
+            return {"observation": f"搜索失败: {exc}", "next_step": "response_agent"}
+
+
+def search_node(state: AgentState) -> dict:
+    return asyncio.run(_search_node_async(state))
 
 
 def search_agent_node(state: AgentState) -> dict:

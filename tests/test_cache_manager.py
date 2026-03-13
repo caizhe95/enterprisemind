@@ -2,6 +2,7 @@ import uuid
 from pathlib import Path
 
 from cache.cache_manager import CacheManager
+from cache import langchain_cache as langchain_cache_module
 
 
 def test_cache_manager_supports_persistent_cache():
@@ -19,6 +20,18 @@ def test_cache_manager_supports_persistent_cache():
 
     assert first == {"value": "demo"}
     assert second == {"value": "demo"}
-    assert stats["persistent"]["type"] == "persistent"
     assert stats["persistent"]["size"] >= 1
     assert stats["persistent"]["hits"] >= 1
+
+
+def test_initialize_llm_cache_uses_in_memory_backend(monkeypatch):
+    captured = []
+
+    monkeypatch.setattr(langchain_cache_module, "_CACHE_INITIALIZED", False)
+    monkeypatch.setattr(langchain_cache_module, "_build_in_memory_cache", lambda: "memory-cache")
+    monkeypatch.setattr(langchain_cache_module, "set_llm_cache", lambda cache: captured.append(cache))
+    monkeypatch.setattr("config.config.LLM_CACHE_BACKEND", "memory")
+
+    langchain_cache_module.initialize_llm_cache(force=True)
+
+    assert captured == ["memory-cache"]

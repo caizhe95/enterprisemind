@@ -22,6 +22,7 @@ class SmartQueryEnhancer:
         self.decompose_cache_ttl = 1800  # 30分钟
         self.decompose_cache: Dict[str, Dict] = {}
         self.synonyms = self._load_synonyms()
+        self.synonym_lookup = self._build_synonym_lookup(self.synonyms)
 
     @staticmethod
     def _load_synonyms() -> Dict[str, List[str]]:
@@ -33,6 +34,17 @@ class SmartQueryEnhancer:
             if canonical:
                 synonym_map[canonical] = variants
         return synonym_map
+
+    @staticmethod
+    def _build_synonym_lookup(synonyms: Dict[str, List[str]]) -> Dict[str, str]:
+        lookup: Dict[str, str] = {}
+        for canonical, variants in synonyms.items():
+            terms = [canonical, *variants]
+            for term in terms:
+                normalized = str(term).strip()
+                if normalized and normalized not in lookup:
+                    lookup[normalized] = canonical
+        return lookup
 
     def analyze_query(self, query: str) -> Dict[str, bool]:
         """
@@ -59,12 +71,32 @@ class SmartQueryEnhancer:
                 w in normalized_query
                 for w in ["价格", "库存", "销量", "2024", "2025", "具体", "数据"]
             ),
-            "is_complex": any(
+            "is_compare": any(
                 w in normalized_query
-                for w in ["和", "对比", "vs", "以及", "同时", "分别", "区别"]
+                for w in ["对比", "vs", "区别", "哪个更", "哪个贵", "哪个便宜"]
             ),
-            "has_synonyms": any(k in normalized_query for k in self.synonyms.keys()),
+            "has_list_intent": any(
+                w in normalized_query
+                for w in ["分别", "各自", "分别是", "分别为", "分别是什么", "有哪些"]
+            ),
+            "has_multi_clause_connector": any(
+                w in normalized_query for w in ["以及", "同时", "并且"]
+            )
+            or (
+                "和" in normalized_query
+                and any(
+                    w in normalized_query
+                    for w in ["什么", "哪些", "多少", "价格", "品类", "参数", "配置", "政策"]
+                )
+            ),
+            "has_synonyms": any(
+                term in normalized_query for term in self.synonym_lookup.keys()
+            ),
         }
+        features["is_complex"] = (
+            (features["has_list_intent"] or features["has_multi_clause_connector"])
+            and not features["is_compare"]
+        )
 
         # 智能决策逻辑
         strategy = {
@@ -84,6 +116,7 @@ class SmartQueryEnhancer:
             # 拆解：明显包含多个子问题且长度足够
             "use_decompose": (not no_decompose)
             and features["is_complex"]
+            and not features["is_compare"]
             and features["length"] > 10,
         }
 
@@ -137,15 +170,27 @@ class SmartQueryEnhancer:
     def _rule_expand(self, query: str) -> List[str]:
         """基于规则的同义词扩展（零成本）"""
         expansions = [query]
+        matched_terms = [
+            term
+            for term in sorted(self.synonym_lookup.keys(), key=len, reverse=True)
+            if term in query
+        ]
 
-        for key, variants in self.synonyms.items():
-            if key in query:
-                for variant in variants:
-                    new_query = query.replace(key, variant)
-                    if new_query not in expansions:
-                        expansions.append(new_query)
-                        if len(expansions) >= 3:  # 限制扩展数量
-                            return expansions
+        for term in matched_terms:
+            canonical = self.synonym_lookup[term]
+            related_terms = [canonical] + [
+                variant
+                for variant in self.synonyms.get(canonical, [])
+                if variant and variant != term
+            ]
+            for replacement in related_terms:
+                if replacement == term:
+                    continue
+                new_query = query.replace(term, replacement)
+                if new_query not in expansions:
+                    expansions.append(new_query)
+                    if len(expansions) >= 3:  # 限制扩展数量
+                        return expansions
 
         # 口语化变体转换（疑问句↔陈述句）
         if "吗" in query or "?" in query or "？" in query:
@@ -259,12 +304,23 @@ JSON："""
 
         if marker:
             left = base.split(marker)[0].strip()
+            entity_prefix = ""
+            field_segment = left
+            if "的" in left:
+                entity_prefix, field_segment = left.split("的", 1)
+                entity_prefix = entity_prefix.strip(" ，。？?")
+                field_segment = field_segment.strip(" ，。？?")
             parts = [
                 p.strip(" ，。？?")
-                for p in re.split(sep_pattern, left)
+                for p in re.split(sep_pattern, field_segment)
                 if p.strip(" ，。？?")
             ]
             if len(parts) >= 2:
+                if entity_prefix:
+                    return [
+                        {"query": f"{entity_prefix}的{p}", "intent": "sub_query"}
+                        for p in parts[:3]
+                    ]
                 return [{"query": p, "intent": "sub_query"} for p in parts[:3]]
 
         if "对比" in base or "区别" in base:
@@ -333,8 +389,15 @@ JSON："""
             "是",
             "的",
         }
+        entity_candidate = text.strip()
+        for marker in ["的", "和", "与", "以及", "对比", "区别", "哪个", "什么", "多少"]:
+            if marker in entity_candidate:
+                entity_candidate = entity_candidate.split(marker, 1)[0].strip()
+                break
+        if 2 <= len(entity_candidate) <= 30 and entity_candidate not in stopwords:
+            return [entity_candidate]
         tokens = re.findall(r"[\u4e00-\u9fffA-Za-z0-9\-]{2,20}", text)
-        return [t for t in tokens if t not in stopwords]
+        return [t for t in tokens if t not in stopwords and len(t) <= 12]
 
     @staticmethod
     def _sanitize_subquery_text(text: str) -> str:

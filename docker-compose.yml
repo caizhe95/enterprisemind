@@ -4,7 +4,7 @@ services:
   app:
     build: .
     ports:
-      - "7860:7860"
+      - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:-123456}@db:5432/enterprisemind
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
@@ -13,11 +13,20 @@ services:
       - OLLAMA_MODEL=${OLLAMA_MODEL:-deepseek-r1:14b}
       - OLLAMA_EMBEDDING_MODEL=${OLLAMA_EMBEDDING_MODEL:-bge-m3}
       - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
-      - LANGSMITH_TRACING=true
+      - LANGSMITH_TRACING=${LANGSMITH_TRACING:-false}
       - LANGSMITH_PROJECT=enterprisemind-docker
       - RUN_MODE=${RUN_MODE:-local}
       - ENABLE_SELF_RAG=${ENABLE_SELF_RAG:-true}
       - ENABLE_QUERY_OPTIMIZATION=${ENABLE_QUERY_OPTIMIZATION:-true}
+      - PERSISTENT_CACHE_BACKEND=${PERSISTENT_CACHE_BACKEND:-sqlite}
+      - PERSISTENT_CACHE_DB_PATH=${PERSISTENT_CACHE_DB_PATH:-./cache/persistent_cache.db}
+      - PERSISTENT_CACHE_TTL_SECONDS=${PERSISTENT_CACHE_TTL_SECONDS:-3600}
+      - PERSISTENT_CACHE_REDIS_PREFIX=${PERSISTENT_CACHE_REDIS_PREFIX:-persistent_cache:}
+      - LLM_CACHE_BACKEND=${LLM_CACHE_BACKEND:-none}
+      - LLM_CACHE_TTL_SECONDS=${LLM_CACHE_TTL_SECONDS:-3600}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - HOST=0.0.0.0
+      - PORT=8000
     volumes:
       - ./data:/app/data
       - app_logs:/app/logs
@@ -27,6 +36,19 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - enterprisemind_net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis_data:/data
     restart: unless-stopped
     networks:
       - enterprisemind_net
@@ -56,6 +78,7 @@ volumes:
   app_cache:
   app_memory:
   chroma_data:
+  redis_data:
 
 networks:
   enterprisemind_net:
