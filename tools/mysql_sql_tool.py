@@ -1,29 +1,84 @@
-# postgres_sql_tool.py
-"""PostgreSQL工具 - Few-shot版本"""
+"""MySQL 工具 - Few-shot 版本"""
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
 from typing import Annotated
+from urllib.parse import parse_qs, unquote, urlparse
 
-import asyncpg
+import aiomysql
+import pymysql
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from psycopg2.extras import RealDictCursor
-import psycopg2
 
-from prompts.registry import PromptRegistry
-from llm_factory import get_llm
 from config import config
+from llm_factory import get_llm
+from prompts.registry import PromptRegistry
 
 _schema_cache = None
 
 
+def _row_value(row: dict, key: str):
+    if key in row:
+        return row[key]
+    lowered = key.lower()
+    uppered = key.upper()
+    titled = key.title()
+    for candidate in (lowered, uppered, titled):
+        if candidate in row:
+            return row[candidate]
+    raise KeyError(key)
+
+
 def get_db_url():
     return os.getenv(
-        "DATABASE_URL", "postgresql://postgres:123456@localhost:5432/enterprisemind"
+        "DATABASE_URL", "mysql://root:123456@localhost:3306/enterprisemind"
+    )
+
+
+def _parse_mysql_url() -> dict:
+    parsed = urlparse(get_db_url())
+    if parsed.scheme not in {"mysql", "mysql+pymysql", "mysql+aiomysql"}:
+        raise ValueError(f"仅支持 MySQL 数据库 URL，当前为: {parsed.scheme}")
+
+    query = parse_qs(parsed.query)
+    charset = query.get("charset", ["utf8mb4"])[0]
+    return {
+        "host": parsed.hostname or "localhost",
+        "port": parsed.port or 3306,
+        "user": unquote(parsed.username or "root"),
+        "password": unquote(parsed.password or ""),
+        "db": parsed.path.lstrip("/"),
+        "charset": charset,
+        "autocommit": True,
+    }
+
+
+def _connect_sync():
+    params = _parse_mysql_url()
+    return pymysql.connect(
+        host=params["host"],
+        port=params["port"],
+        user=params["user"],
+        password=params["password"],
+        database=params["db"],
+        charset=params["charset"],
+        autocommit=params["autocommit"],
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+
+
+async def _connect_async():
+    params = _parse_mysql_url()
+    return await aiomysql.connect(
+        host=params["host"],
+        port=params["port"],
+        user=params["user"],
+        password=params["password"],
+        db=params["db"],
+        charset=params["charset"],
+        autocommit=params["autocommit"],
     )
 
 
@@ -45,27 +100,32 @@ def get_schema():
     if _schema_cache:
         return _schema_cache
 
-    conn = psycopg2.connect(get_db_url())
-    cur = conn.cursor()
-
-    cur.execute("""
+    conn = _connect_sync()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
                 SELECT table_name, column_name, data_type
                 FROM information_schema.columns
-                WHERE table_schema = 'public'
+                WHERE table_schema = DATABASE()
                 ORDER BY table_name, ordinal_position
-                """)
+                """
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
 
     tables = {}
-    for row in cur.fetchall():
-        table = row[0]
+    for row in rows:
+        table = _row_value(row, "table_name")
         if table not in tables:
             tables[table] = []
-        tables[table].append(f"  {row[1]} ({row[2]})")
+        column_name = _row_value(row, "column_name")
+        data_type = _row_value(row, "data_type")
+        tables[table].append(f"  {column_name} ({data_type})")
 
     parts = [f"\n表: {t}\n" + "\n".join(c) for t, c in tables.items()]
     _schema_cache = "\n".join(parts)
-    conn.close()
-
     return _schema_cache
 
 
@@ -74,25 +134,29 @@ async def get_schema_async() -> str:
     if _schema_cache:
         return _schema_cache
 
-    conn = await asyncpg.connect(get_db_url())
+    conn = await _connect_async()
     try:
-        rows = await conn.fetch(
-            """
-            SELECT table_name, column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-            ORDER BY table_name, ordinal_position
-            """
-        )
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(
+                """
+                SELECT table_name, column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                ORDER BY table_name, ordinal_position
+                """
+            )
+            rows = await cur.fetchall()
     finally:
-        await conn.close()
+        conn.close()
 
     tables = {}
     for row in rows:
-        table = row["table_name"]
+        table = _row_value(row, "table_name")
         if table not in tables:
             tables[table] = []
-        tables[table].append(f"  {row['column_name']} ({row['data_type']})")
+        column_name = _row_value(row, "column_name")
+        data_type = _row_value(row, "data_type")
+        tables[table].append(f"  {column_name} ({data_type})")
 
     parts = [f"\n表: {t}\n" + "\n".join(c) for t, c in tables.items()]
     _schema_cache = "\n".join(parts)
@@ -100,11 +164,9 @@ async def get_schema_async() -> str:
 
 
 def generate_sql_with_examples(question: str) -> str:
-    """带Few-shot示例的SQL生成"""
+    """带 Few-shot 示例的 SQL 生成。"""
     schema = get_schema()
     llm = get_sql_llm()
-
-    # 使用PromptRegistry获取带示例的模板
     prompt_text = PromptRegistry.get(
         "sql_generator", variables={"schema": schema, "question": question}
     )
@@ -113,11 +175,9 @@ def generate_sql_with_examples(question: str) -> str:
     sql = response.content.strip()
     sql = re.sub(r"```sql|```", "", sql).strip()
 
-    # 强制安全：确保是SELECT
     if not sql.strip().upper().startswith("SELECT"):
         raise ValueError("生成的SQL不是查询语句")
 
-    # 自动添加LIMIT（如果没有）
     if "LIMIT" not in sql.upper():
         sql = sql.rstrip(";") + " LIMIT 50;"
 
@@ -125,7 +185,7 @@ def generate_sql_with_examples(question: str) -> str:
 
 
 async def generate_sql_with_examples_async(question: str) -> str:
-    """带Few-shot示例的SQL生成（异步版）。"""
+    """带 Few-shot 示例的 SQL 生成（异步版）。"""
     schema = await get_schema_async()
     llm = get_sql_llm()
     prompt_text = PromptRegistry.get(
@@ -146,12 +206,12 @@ async def generate_sql_with_examples_async(question: str) -> str:
 
 
 def generate_sql(question: str) -> str:
-    """向后兼容旧接口"""
+    """向后兼容旧接口。"""
     return generate_sql_with_examples(question)
 
 
 async def sql_query_async(question: str, safety_override: bool = False) -> dict:
-    """自然语言转SQL并执行（异步版）。"""
+    """自然语言转 SQL 并执行（异步版）。"""
     sql = await generate_sql_with_examples_async(question)
 
     dangerous = [
@@ -168,9 +228,11 @@ async def sql_query_async(question: str, safety_override: bool = False) -> dict:
     if is_dangerous and not safety_override:
         return {"interrupt": "__INTERRUPT__", "sql": sql, "reason": "危险操作"}
 
-    conn = await asyncpg.connect(get_db_url())
+    conn = await _connect_async()
     try:
-        rows = await conn.fetch(sql)
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(sql)
+            rows = await cur.fetchall()
         data = [dict(row) for row in rows[:50]]
         llm = get_sql_llm()
         explain_prompt = f"""将以下数据总结为一句话回答用户问题。
@@ -187,7 +249,7 @@ async def sql_query_async(question: str, safety_override: bool = False) -> dict:
     except Exception as exc:
         return {"error": str(exc), "sql": sql}
     finally:
-        await conn.close()
+        conn.close()
 
 
 async def sql_explain_async(question: str) -> str:
@@ -199,11 +261,9 @@ def sql_query(
     question: Annotated[str, "自然语言查询问题"],
     safety_override: Annotated[bool, "跳过安全检查"] = False,
 ) -> str:
-    """自然语言转SQL并执行"""
-
+    """自然语言转 SQL 并执行。"""
     sql = generate_sql_with_examples(question)
 
-    # 多层安全检查
     dangerous = [
         "DELETE",
         "UPDATE",
@@ -219,15 +279,13 @@ def sql_query(
     if is_dangerous and not safety_override:
         return f"__INTERRUPT__|sql_safety|{sql}|危险操作"
 
-    # 执行查询
-    conn = psycopg2.connect(get_db_url(), cursor_factory=RealDictCursor)
+    conn = _connect_sync()
     try:
-        cur = conn.cursor()
-        cur.execute(sql)
-        rows = cur.fetchall()
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
         data = [dict(row) for row in rows[:50]]
 
-        # 生成自然语言解释
         llm = get_sql_llm()
         explain_prompt = f"""将以下数据总结为一句话回答用户问题。
 数据：{str(data[:3])}
@@ -238,16 +296,16 @@ def sql_query(
         return {
             "sql": sql,
             "summary": explain.content,
-            "data": data[:10],  # 限制返回数量
+            "data": data[:10],
             "count": len(data),
         }
-    except Exception as e:
-        return {"error": str(e), "sql": sql}
+    except Exception as exc:
+        return {"error": str(exc), "sql": sql}
     finally:
         conn.close()
 
 
 @tool
 def sql_explain(question: Annotated[str, "查询问题"]) -> str:
-    """仅生成SQL，不执行"""
+    """仅生成 SQL，不执行。"""
     return generate_sql_with_examples(question)

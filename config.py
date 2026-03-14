@@ -30,7 +30,7 @@ class Config:
 
     # ========== 3. 数据存储（.env已定义） ==========
     DATABASE_URL = os.getenv(
-        "DATABASE_URL", "postgresql://postgres:change_me@localhost:5432/enterprisemind"
+        "DATABASE_URL", "mysql://root:123456@localhost:3306/enterprisemind"
     )
     CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
     PERSISTENT_CACHE_BACKEND = os.getenv(

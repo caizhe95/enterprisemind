@@ -2,7 +2,7 @@ import asyncio
  
 from cache.cache_manager import CacheStats, RedisPersistentCache 
 from graph.agents.search import search_node 
-from tools.postgres_sql_tool import sql_query_async 
+from tools.mysql_sql_tool import sql_query_async 
 from tools.tavily_tool import tavily_search_async 
  
  
@@ -32,7 +32,7 @@ def test_tavily_search_async_uses_httpx(monkeypatch):
     monkeypatch.setattr('tools.tavily_tool.httpx.AsyncClient', FakeAsyncClient) 
     result = asyncio.run(tavily_search_async('iphone 15 price', search_depth='advanced', max_results=3)) 
     assert result['answer'] == 'test-answer' 
-    assert captured['json']['search_depth'] == 'advanced' 
+    assert captured['json']['search_depth'] == 'advanced'
  
  
 def test_search_node_fanout_merges_async_results(monkeypatch): 
@@ -46,17 +46,27 @@ def test_search_node_fanout_merges_async_results(monkeypatch):
     monkeypatch.setattr('graph.agents.search.tavily_search_async', fake_tavily_search_async) 
     monkeypatch.setattr('graph.agents.search.get_self_rag_evaluator', lambda: FakeEvaluator()) 
     result = search_node({'question': 'latest phone price', 'worker_input': 'latest phone price'}) 
-    assert len(result['retrieved_docs']) >= 4  
+    assert len(result['retrieved_docs']) in range(4, 1000) 
     assert result['tool_results'][0]['result']['basic']['answer'] == 'basic-answer' 
     assert result['tool_results'][0]['result']['advanced']['answer'] == 'advanced-answer' 
  
  
-def test_sql_query_async_uses_asyncpg(monkeypatch): 
-    class FakeConn: 
-        async def fetch(self, sql): 
-            return [{'product_name': 'demo', 'sales': 390429}] 
-        async def close(self): 
+def test_sql_query_async_uses_aiomysql(monkeypatch): 
+    class FakeCursor: 
+        async def __aenter__(self): 
+            return self 
+        async def __aexit__(self, exc_type, exc, tb): 
             return None 
+        async def execute(self, sql): 
+            return None 
+        async def fetchall(self): 
+            return [{'product_name': 'demo', 'sales': 390429}] 
+ 
+    class FakeConn: 
+        def cursor(self, _cursor_type=None): 
+            return FakeCursor() 
+        def close(self): 
+            return None
  
     class FakeLLMResponse: 
         def __init__(self, content): 
@@ -66,14 +76,14 @@ def test_sql_query_async_uses_asyncpg(monkeypatch):
         async def ainvoke(self, prompt): 
             return FakeLLMResponse('async sql summary') 
  
-    async def fake_connect(_url): 
+    async def fake_connect(): 
         return FakeConn() 
     async def fake_generate_sql_with_examples_async(_question): 
         return 'SELECT product_name, sales FROM sales LIMIT 1;' 
  
-    monkeypatch.setattr('tools.postgres_sql_tool.asyncpg.connect', fake_connect) 
-    monkeypatch.setattr('tools.postgres_sql_tool.generate_sql_with_examples_async', fake_generate_sql_with_examples_async) 
-    monkeypatch.setattr('tools.postgres_sql_tool.get_sql_llm', lambda: FakeLLM()) 
+    monkeypatch.setattr('tools.mysql_sql_tool._connect_async', fake_connect) 
+    monkeypatch.setattr('tools.mysql_sql_tool.generate_sql_with_examples_async', fake_generate_sql_with_examples_async) 
+    monkeypatch.setattr('tools.mysql_sql_tool.get_sql_llm', lambda: FakeLLM()) 
     result = asyncio.run(sql_query_async('top sales row')) 
     assert result['summary'] == 'async sql summary' 
     assert result['count'] == 1  
@@ -92,7 +102,7 @@ def test_redis_persistent_cache_async_round_trip():
         async def expire(self, key, ttl): 
             return self 
         async def execute(self): 
-            return [] 
+            return []
  
     class FakeAsyncRedisClient: 
         def __init__(self): 
@@ -120,4 +130,4 @@ def test_redis_persistent_cache_async_round_trip():
     cache.stats = CacheStats() 
     asyncio.run(cache.aset('demo', {'value': 'ok'}, ttl=30)) 
     result = asyncio.run(cache.aget('demo')) 
-    asyncio.run(cache.aclear()) 
+    asyncio.run(cache.aclear())

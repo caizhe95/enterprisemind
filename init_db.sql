@@ -1,9 +1,11 @@
--- init_db.sql - 实习项目一致版本（对应 products.md / sales.md）
--- 如需重置：
--- DROP TABLE IF EXISTS sales;
--- DROP TABLE IF EXISTS products;
+-- init_db.sql - MySQL 8 初始化脚本
 
--- 产品表（与知识源 products.md 对齐）
+SET NAMES utf8mb4;
+SET FOREIGN_KEY_CHECKS = 0;
+
+DROP TABLE IF EXISTS sales;
+DROP TABLE IF EXISTS products;
+
 CREATE TABLE IF NOT EXISTS products (
     sku VARCHAR(20) PRIMARY KEY,
     name VARCHAR(120) NOT NULL,
@@ -14,119 +16,160 @@ CREATE TABLE IF NOT EXISTS products (
     warranty VARCHAR(30) NOT NULL,
     highlights TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 销售表（与知识源 sales.md 对齐）
 CREATE TABLE IF NOT EXISTS sales (
-    id SERIAL PRIMARY KEY,
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
     sale_date DATE NOT NULL,
-    sku VARCHAR(20) NOT NULL REFERENCES products(sku),
+    sku VARCHAR(20) NOT NULL,
     product_name VARCHAR(120) NOT NULL,
     category VARCHAR(40) NOT NULL,
     region VARCHAR(20) NOT NULL,
     channel VARCHAR(10) NOT NULL,
-    quantity INTEGER NOT NULL,
+    quantity INT NOT NULL,
     amount DECIMAL(14,2) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_sales_product FOREIGN KEY (sku) REFERENCES products(sku)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 清空旧数据（按当前结构重建）
-TRUNCATE TABLE sales, products RESTART IDENTITY;
-
--- 插入120个产品（8个品类循环）
-WITH cat_cfg AS (
-    SELECT * FROM (
-        VALUES
-        (1, '手机', '星澜', 1499, 6999),
-        (2, '笔记本', '智核', 3599, 10999),
-        (3, '平板', '星澜', 1499, 5999),
-        (4, '智能手表', '云途', 699, 2999),
-        (5, '蓝牙耳机', '锐动', 199, 1999),
-        (6, '电视', '巨幕', 2299, 12999),
-        (7, '空调', '清风', 1999, 7999),
-        (8, '冰箱', '冷峰', 2499, 9999)
-    ) AS t(idx, category, brand, min_price, max_price)
-),
-seq AS (
-    SELECT generate_series(1, 120) AS n
-)
 INSERT INTO products (sku, name, category, brand, price, launch_date, warranty, highlights)
+WITH RECURSIVE seq AS (
+    SELECT 1 AS n
+    UNION ALL
+    SELECT n + 1 FROM seq WHERE n < 120
+)
 SELECT
-    CASE c.category
-        WHEN '手机' THEN '手机-' || lpad(s.n::text, 4, '0')
-        WHEN '笔记本' THEN '笔记-' || lpad(s.n::text, 4, '0')
-        WHEN '平板' THEN '平板-' || lpad(s.n::text, 4, '0')
-        WHEN '智能手表' THEN '智能-' || lpad(s.n::text, 4, '0')
-        WHEN '蓝牙耳机' THEN '蓝牙-' || lpad(s.n::text, 4, '0')
-        WHEN '电视' THEN '电视-' || lpad(s.n::text, 4, '0')
-        WHEN '空调' THEN '空调-' || lpad(s.n::text, 4, '0')
-        ELSE '冰箱-' || lpad(s.n::text, 4, '0')
+    CASE MOD(n - 1, 8) + 1
+        WHEN 1 THEN CONCAT('手机-', LPAD(n, 4, '0'))
+        WHEN 2 THEN CONCAT('笔记-', LPAD(n, 4, '0'))
+        WHEN 3 THEN CONCAT('平板-', LPAD(n, 4, '0'))
+        WHEN 4 THEN CONCAT('智能-', LPAD(n, 4, '0'))
+        WHEN 5 THEN CONCAT('蓝牙-', LPAD(n, 4, '0'))
+        WHEN 6 THEN CONCAT('电视-', LPAD(n, 4, '0'))
+        WHEN 7 THEN CONCAT('空调-', LPAD(n, 4, '0'))
+        ELSE CONCAT('冰箱-', LPAD(n, 4, '0'))
     END AS sku,
-    c.brand || c.category || ((s.n - 1) % 18 + 1)::text || '代' AS name,
-    c.category,
-    c.brand,
-    (c.min_price + ((s.n * 173) % (c.max_price - c.min_price + 1)))::numeric(10,2) AS price,
-    make_date(2023 + ((s.n - 1) % 3), ((s.n - 1) % 12) + 1, ((s.n - 1) % 27) + 1) AS launch_date,
+    CONCAT(
+        CASE MOD(n - 1, 8) + 1
+            WHEN 1 THEN '星澜'
+            WHEN 2 THEN '智核'
+            WHEN 3 THEN '星澜'
+            WHEN 4 THEN '云途'
+            WHEN 5 THEN '锐动'
+            WHEN 6 THEN '巨幕'
+            WHEN 7 THEN '清风'
+            ELSE '冷峰'
+        END,
+        CASE MOD(n - 1, 8) + 1
+            WHEN 1 THEN '手机'
+            WHEN 2 THEN '笔记本'
+            WHEN 3 THEN '平板'
+            WHEN 4 THEN '智能手表'
+            WHEN 5 THEN '蓝牙耳机'
+            WHEN 6 THEN '电视'
+            WHEN 7 THEN '空调'
+            ELSE '冰箱'
+        END,
+        MOD(n - 1, 18) + 1,
+        '代'
+    ) AS name,
+    CASE MOD(n - 1, 8) + 1
+        WHEN 1 THEN '手机'
+        WHEN 2 THEN '笔记本'
+        WHEN 3 THEN '平板'
+        WHEN 4 THEN '智能手表'
+        WHEN 5 THEN '蓝牙耳机'
+        WHEN 6 THEN '电视'
+        WHEN 7 THEN '空调'
+        ELSE '冰箱'
+    END AS category,
+    CASE MOD(n - 1, 8) + 1
+        WHEN 1 THEN '星澜'
+        WHEN 2 THEN '智核'
+        WHEN 3 THEN '星澜'
+        WHEN 4 THEN '云途'
+        WHEN 5 THEN '锐动'
+        WHEN 6 THEN '巨幕'
+        WHEN 7 THEN '清风'
+        ELSE '冷峰'
+    END AS brand,
+    CAST(
+        CASE MOD(n - 1, 8) + 1
+            WHEN 1 THEN 1499 + MOD(n * 173, 6999 - 1499 + 1)
+            WHEN 2 THEN 3599 + MOD(n * 173, 10999 - 3599 + 1)
+            WHEN 3 THEN 1499 + MOD(n * 173, 5999 - 1499 + 1)
+            WHEN 4 THEN 699 + MOD(n * 173, 2999 - 699 + 1)
+            WHEN 5 THEN 199 + MOD(n * 173, 1999 - 199 + 1)
+            WHEN 6 THEN 2299 + MOD(n * 173, 12999 - 2299 + 1)
+            WHEN 7 THEN 1999 + MOD(n * 173, 7999 - 1999 + 1)
+            ELSE 2499 + MOD(n * 173, 9999 - 2499 + 1)
+        END AS DECIMAL(10,2)
+    ) AS price,
+    MAKEDATE(2023 + MOD(n - 1, 3), 1) + INTERVAL MOD(n - 1, 12) MONTH + INTERVAL MOD(n - 1, 27) DAY AS launch_date,
     '整机1年' AS warranty,
-    CASE c.category
-        WHEN '手机' THEN '影像稳定, 电池耐用, 信号稳定'
-        WHEN '笔记本' THEN '轻薄便携, 长续航, 高性能'
-        WHEN '平板' THEN '学习友好, 护眼屏, 影音体验好'
-        WHEN '智能手表' THEN '健康监测, 运动识别, 防水'
-        WHEN '蓝牙耳机' THEN '降噪清晰, 通话稳定, 佩戴舒适'
-        WHEN '电视' THEN '高亮度, 色彩准确, 系统流畅'
-        WHEN '空调' THEN '节能省电, 静音运行, 制冷快速'
+    CASE MOD(n - 1, 8) + 1
+        WHEN 1 THEN '影像稳定, 电池耐用, 信号稳定'
+        WHEN 2 THEN '轻薄便携, 长续航, 高性能'
+        WHEN 3 THEN '学习友好, 护眼屏, 影音体验好'
+        WHEN 4 THEN '健康监测, 运动识别, 防水'
+        WHEN 5 THEN '降噪清晰, 通话稳定, 佩戴舒适'
+        WHEN 6 THEN '高亮度, 色彩准确, 系统流畅'
+        WHEN 7 THEN '节能省电, 静音运行, 制冷快速'
         ELSE '保鲜持久, 分区清晰, 低噪音'
     END AS highlights
-FROM seq s
-JOIN cat_cfg c ON c.idx = ((s.n - 1) % 8) + 1;
+FROM seq;
 
--- 插入360条销售（与实习知识源规模一致）
-WITH seq AS (
-    SELECT generate_series(1, 360) AS n
-),
-picked AS (
-    SELECT
-        s.n,
-        p.sku,
-        p.name AS product_name,
-        p.category,
-        p.price,
-        date '2024-01-01' + ((s.n - 1) % 60) AS sale_date,
-        (ARRAY['华东', '华北', '华南', '西部', '华中'])[ ((s.n - 1) % 5) + 1 ] AS region,
-        (ARRAY['线上', '线下'])[ ((s.n - 1) % 2) + 1 ] AS channel,
-        ((s.n * 7) % 76 + 5) AS quantity
-    FROM seq s
-    JOIN products p ON p.sku = (
-        SELECT sku FROM products ORDER BY sku LIMIT 1 OFFSET ((s.n - 1) % 120)
-    )
-)
 INSERT INTO sales (sale_date, sku, product_name, category, region, channel, quantity, amount)
+WITH RECURSIVE seq AS (
+    SELECT 1 AS n
+    UNION ALL
+    SELECT n + 1 FROM seq WHERE n < 360
+)
 SELECT
-    sale_date,
-    sku,
-    product_name,
-    category,
-    region,
-    channel,
-    quantity,
-    (price * quantity)::numeric(14,2) AS amount
-FROM picked;
+    DATE_ADD('2024-01-01', INTERVAL MOD(n - 1, 60) DAY) AS sale_date,
+    p.sku,
+    p.name AS product_name,
+    p.category,
+    CASE MOD(n - 1, 5) + 1
+        WHEN 1 THEN '华东'
+        WHEN 2 THEN '华北'
+        WHEN 3 THEN '华南'
+        WHEN 4 THEN '西部'
+        ELSE '华中'
+    END AS region,
+    CASE MOD(n - 1, 2) + 1
+        WHEN 1 THEN '线上'
+        ELSE '线下'
+    END AS channel,
+    MOD(n * 7, 76) + 5 AS quantity,
+    CAST(p.price * (MOD(n * 7, 76) + 5) AS DECIMAL(14,2)) AS amount
+FROM seq
+JOIN products p
+    ON p.sku = CASE MOD(n - 1, 8) + 1
+        WHEN 1 THEN CONCAT('手机-', LPAD(MOD(n - 1, 120) + 1, 4, '0'))
+        WHEN 2 THEN CONCAT('笔记-', LPAD(MOD(n - 1, 120) + 1, 4, '0'))
+        WHEN 3 THEN CONCAT('平板-', LPAD(MOD(n - 1, 120) + 1, 4, '0'))
+        WHEN 4 THEN CONCAT('智能-', LPAD(MOD(n - 1, 120) + 1, 4, '0'))
+        WHEN 5 THEN CONCAT('蓝牙-', LPAD(MOD(n - 1, 120) + 1, 4, '0'))
+        WHEN 6 THEN CONCAT('电视-', LPAD(MOD(n - 1, 120) + 1, 4, '0'))
+        WHEN 7 THEN CONCAT('空调-', LPAD(MOD(n - 1, 120) + 1, 4, '0'))
+        ELSE CONCAT('冰箱-', LPAD(MOD(n - 1, 120) + 1, 4, '0'))
+    END;
 
--- 索引
-CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(sale_date);
-CREATE INDEX IF NOT EXISTS idx_sales_region ON sales(region);
-CREATE INDEX IF NOT EXISTS idx_sales_channel ON sales(channel);
-CREATE INDEX IF NOT EXISTS idx_sales_sku ON sales(sku);
-CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
+CREATE INDEX idx_sales_date ON sales(sale_date);
+CREATE INDEX idx_sales_region ON sales(region);
+CREATE INDEX idx_sales_channel ON sales(channel);
+CREATE INDEX idx_sales_sku ON sales(sku);
+CREATE INDEX idx_products_category ON products(category);
 
--- 验证
-SELECT '产品数量' AS metric, COUNT(*)::text AS value FROM products
+SET FOREIGN_KEY_CHECKS = 1;
+
+SELECT '产品数量' AS metric, CAST(COUNT(*) AS CHAR) AS value FROM products
 UNION ALL
-SELECT '销售记录数', COUNT(*)::text FROM sales
+SELECT '销售记录数', CAST(COUNT(*) AS CHAR) FROM sales
 UNION ALL
-SELECT '总销售额', ROUND(SUM(amount)::numeric, 2)::text FROM sales
+SELECT '总销售额', CAST(ROUND(SUM(amount), 2) AS CHAR) FROM sales
 UNION ALL
-SELECT '覆盖品类数', COUNT(DISTINCT category)::text FROM products
+SELECT '覆盖品类数', CAST(COUNT(DISTINCT category) AS CHAR) FROM products
 UNION ALL
-SELECT '覆盖地区数', COUNT(DISTINCT region)::text FROM sales;
+SELECT '覆盖地区数', CAST(COUNT(DISTINCT region) AS CHAR) FROM sales;
